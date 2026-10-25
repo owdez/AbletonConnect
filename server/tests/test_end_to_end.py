@@ -151,5 +151,6 @@ async def test_tool_list_matches_bridge_commands(stack):
         from LiveBridge.dispatch import COMMANDS
 
         tools = {t.name for t in (await client.list_tools()).tools}
-        assert len(tools) == 19
-        assert tools <= set(COMMANDS)
+        local = {"search_samples"}  # answered from the sample index, not by LiveBridge
+        assert len(tools) == 20
+        assert tools - local <= set(COMMANDS)
