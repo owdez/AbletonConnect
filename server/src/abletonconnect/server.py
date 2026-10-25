@@ -15,7 +15,7 @@ from typing import Annotated, Any, Literal
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sampleindex import config as sample_config
 from sampleindex import search as sample_search
 
@@ -29,6 +29,8 @@ Controls the Ableton Live set that's open on this Mac.
   of 4/4. To build a song: one scene per section, name them with set_scene, then arrange_scenes puts the sections
   on the Arrangement timeline.
 - Volume: prefer volume_db. Raw fader value 0.85 is 0 dB. Device parameters take what Live displays: '120 Hz', '350 ms', '1/4'.
+- Movement over time (filter sweeps, volume rides, rising sends for build-ups) goes in clip envelopes:
+  set_clip_envelope on the Session clip, before arrange_scenes, which carries them onto the timeline.
 - Find sounds with search_browser or browse_browser, then load_browser_item with the returned path.
 - For samples on disk, use search_samples first: it searches a local index of the sample folders (BPM, key, loop or
   one-shot, root note, brightness) instantly. Load a result with load_browser_item(path=<its browser_path>).
@@ -427,6 +429,140 @@ async def get_meters(
     return await call("get_meters", {"duration": duration}, mutating=False, timeout=duration + 10)
 
 
+# ---- clip envelopes -----------------------------------------------------------------------------
+
+Curve = Literal["linear", "hold", "ease_in", "ease_out", "s_curve"]
+EnvelopeValue = Annotated[
+    float | str,
+    Field(description="What Live displays ('-12 dB', '800 Hz', '25L', 'C', '40 %') or a raw parameter value."),
+]
+EnvelopeParameter = Annotated[
+    int | str,
+    Field(
+        description="Without device_index or device_path: a mixer control, 'volume', 'pan', 'send 0' or 'send A'. With one: the device parameter's name or index."
+    ),
+]
+EnvelopeDevice = Annotated[
+    int | None,
+    Field(
+        ge=0,
+        description="Device index on the clip's track. Omit this and device_path for the mixer (volume, pan, sends).",
+    ),
+]
+
+
+def _envelope_target(args: dict[str, Any], device_index: int | None, device_path: list[int] | None) -> dict[str, Any]:
+    if device_index is not None and device_path is not None:
+        raise ToolError("Pass device_index or device_path, not both.")
+    args.update(device_index=device_index, device_path=device_path)
+    return args
+
+
+class EnvelopePoint(BaseModel):
+    time: Annotated[float, Field(ge=0, description="Beats from the clip start.")]
+    value: EnvelopeValue
+    curve: Annotated[
+        Curve,
+        Field(description="Shape from this point to the next: linear, hold (step), ease_in, ease_out or s_curve."),
+    ] = "linear"
+
+
+class EnvelopeRamp(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    start: Annotated[float, Field(ge=0, description="Beat where the ramp starts.")]
+    end: Annotated[float, Field(gt=0, description="Beat where it ends.")]
+    from_: Annotated[EnvelopeValue, Field(alias="from")]
+    to: EnvelopeValue
+    curve: Annotated[
+        Curve, Field(description="linear, ease_in (slow then fast, for build-ups), ease_out, s_curve or hold.")
+    ] = "linear"
+
+
+@mcp.tool(annotations=REPLACE, structured_output=False)
+async def set_clip_envelope(
+    track_index: int,
+    clip_slot_index: SlotIndex,
+    parameter: EnvelopeParameter,
+    device_index: EnvelopeDevice = None,
+    device_path: DevicePathArg = None,
+    ramp: Annotated[
+        EnvelopeRamp | None,
+        Field(description="One move, e.g. {start: 0, end: 32, from: '200 Hz', to: '8 kHz', curve: 'ease_in'}."),
+    ] = None,
+    points: Annotated[
+        list[EnvelopePoint] | None,
+        Field(min_length=1, max_length=500, description="Breakpoints in time order, for shapes a ramp can't draw."),
+    ] = None,
+    replace: Annotated[
+        bool,
+        Field(
+            description="True: the ramp or points are the whole envelope (the first and last values hold outside them). False: only the range they cover changes."
+        ),
+    ] = True,
+) -> str:
+    """Draw automation inside a Session clip: filter sweeps, volume rides, rising sends, pan moves.
+    It plays every time the clip plays (looping with it), so a build-up clip carries its own sweep.
+    Pass a ramp or points. Times are beats from the clip start; values are what Live displays, so
+    endpoints like '200 Hz' land exactly. Live joins breakpoints with straight lines along the
+    control, as if drawn in Live; ease_in/ease_out/s_curve are drawn as 16 short lines. Switches
+    like filter type step at each point. One undo step. Live's API only gives Session clips
+    envelopes, so draw them before arrange_scenes, which carries them onto the timeline."""
+    if (ramp is None) == (points is None):
+        raise ToolError("Pass exactly one of ramp or points.")
+    args: dict[str, Any] = {
+        "track_index": track_index,
+        "clip_slot_index": clip_slot_index,
+        "parameter": parameter,
+        "replace": replace,
+    }
+    _envelope_target(args, device_index, device_path)
+    if ramp is not None:
+        args["ramp"] = ramp.model_dump(by_alias=True)
+    else:
+        args["points"] = [p.model_dump() for p in points or []]
+    return await call("set_clip_envelope", args, mutating=True)
+
+
+@mcp.tool(annotations=READ, structured_output=False)
+async def get_clip_envelope(
+    track_index: int,
+    clip_slot_index: SlotIndex,
+    parameter: Annotated[
+        int | str | None,
+        Field(description="Omit to list every envelope in the clip. Otherwise as in set_clip_envelope."),
+    ] = None,
+    device_index: EnvelopeDevice = None,
+    device_path: DevicePathArg = None,
+    resolution: Annotated[
+        float | None,
+        Field(gt=0, description="Sample the envelope every this many beats instead of listing breakpoints."),
+    ] = None,
+    limit: Annotated[int, Field(ge=1, le=2000)] = 256,
+) -> str:
+    """Read a Session clip's envelope as breakpoints (time, raw value, Live's display), or list
+    which parameters have envelopes in the clip."""
+    args = {"track_index": track_index, "clip_slot_index": clip_slot_index, "parameter": parameter}
+    args.update(resolution=resolution, limit=limit)
+    return await call("get_clip_envelope", _envelope_target(args, device_index, device_path), mutating=False)
+
+
+@mcp.tool(annotations=REPLACE, structured_output=False)
+async def clear_clip_envelope(
+    track_index: int,
+    clip_slot_index: SlotIndex,
+    parameter: Annotated[
+        int | str | None,
+        Field(description="Omit to clear every envelope in the clip. Otherwise as in set_clip_envelope."),
+    ] = None,
+    device_index: EnvelopeDevice = None,
+    device_path: DevicePathArg = None,
+) -> str:
+    """Remove one envelope from a Session clip, or all of them (undoable)."""
+    args = {"track_index": track_index, "clip_slot_index": clip_slot_index, "parameter": parameter}
+    return await call("clear_clip_envelope", _envelope_target(args, device_index, device_path), mutating=True)
+
+
 # ---- browser ------------------------------------------------------------------------------------
 
 
@@ -545,9 +681,12 @@ async def arrange_scenes(
     """Put scenes on the Arrangement timeline back to back, like recording them into the Arrangement:
     each track's clip from a section's scene fills that section. A looping MIDI clip becomes one
     timeline clip as long as the section with its notes repeated; a non-looping clip plays once;
-    audio clips are copied end to end. Tracks with no clip in a scene stay empty there, and a MIDI
-    clip whose notes all fall past a shorter section's end is skipped (listed in skipped_empty).
-    The whole layout is one undo step. Fails if timeline clips are in the way unless replace is true."""
+    audio clips are copied end to end. Clip envelopes come along, repeated with the notes (listed in
+    envelopes); on tracks with devices Live stores them as the track's automation, which stays if
+    those timeline clips are later deleted or replaced, so undo a layout rather than replacing it.
+    Tracks with no clip in a scene stay empty there, and a MIDI clip with nothing inside a shorter
+    section is skipped (listed in skipped_empty). The whole layout is one undo step. Fails if
+    timeline clips are in the way unless replace is true."""
     payload = {
         "sections": [s.model_dump() for s in sections],
         "start_bar": start_bar,
