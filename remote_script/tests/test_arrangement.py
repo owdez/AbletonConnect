@@ -89,3 +89,18 @@ def test_bad_sections(d, scenes):
     assert failure(d, "arrange_scenes", sections=[{"scene": 99, "bars": 4}])["type"] == "not_found"
     assert "bars must be > 0" in failure(d, "arrange_scenes", sections=[{"scene": 0, "bars": 0}])["message"]
     assert "limit" in failure(d, "arrange_scenes", sections=[{"scene": 1, "bars": 5000}])["message"]
+
+
+def test_playhead_stays_put(d, scenes, live, monkeypatch):
+    """Live moves the playhead to each clip create_midi_clip makes; arrange_scenes puts it back."""
+    song, _ = live
+    track = song.tracks[0]
+    real = track.create_midi_clip
+
+    def create_and_move(start, length):
+        song.current_song_time = start
+        return real(start, length)
+
+    monkeypatch.setattr(track, "create_midi_clip", create_and_move)
+    result(d, "arrange_scenes", sections=[{"scene": 0, "bars": 4}, {"scene": 1, "bars": 4}])
+    assert song.current_song_time == 0.0

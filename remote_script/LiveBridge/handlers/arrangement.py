@@ -44,6 +44,9 @@ def arrange_scenes(ctx, sections, start_bar=1, replace=False, show=True):
     if copies > MAX_COPIES:
         raise BridgeError("bad_args", "That layout needs %d timeline clips (the limit is %d). Check the section lengths." % (copies, MAX_COPIES))
 
+    # Live moves the playhead to each clip it creates on the timeline (it was left at the last
+    # section's start in Live 12.4.7), so put it back where it was.
+    position = safe(lambda: song.current_song_time)
     for track, clip in in_the_way:
         track.delete_clip(clip)
     scenes = list(song.scenes)
@@ -55,6 +58,8 @@ def arrange_scenes(ctx, sections, start_bar=1, replace=False, show=True):
                 placed += _place(track, slot.clip, at, length, warnings)
         made += placed
         summary.append({"scene": scene, "name": safe(lambda s=scene: scenes[s].name, ""), "start_bar": rnd(at / bpb + 1, 3), "bars": rnd(length / bpb, 3), "clips": placed})
+    if position is not None and not safe(lambda: song.is_playing, False):
+        safe(lambda: setattr(song, "current_song_time", position))
 
     if show:
         safe(lambda: ctx.application.view.show_view("Arranger"))
