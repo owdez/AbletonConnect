@@ -30,7 +30,9 @@ read-only .als parser (tools/) that never talks to Live.
 1. **Bridge + core tools.** LiveBridge Remote Script and an MCP server with
    19 tools: session, track, clip, note, transport, device-parameter, mixer,
    browser and undo. (FastMCP is called `MCPServer` in mcp 2.x:
-   `from mcp.server.mcpserver import MCPServer`.)
+   `from mcp.server.mcpserver import MCPServer`.) Since extended with
+   scenes, track rename/arm/delete, song scale, display-value parameters
+   and `arrange_scenes`, after a real song build hit those gaps.
 2. **Sample library index.** Scan the sample folders and analyze each file
    with librosa (BPM, key, brightness, length, one-shot or loop type) into a
    local index, then add a search tool. This runs outside Live. Live's browser
@@ -50,7 +52,7 @@ remote_script/LiveBridge/   Remote Script, loaded by Live (Python 3.11, stdlib o
   server.py                 TCP server and connections (no Live imports)
   dispatch.py               @command registry, undo steps, multi-tick jobs
   lom.py                    LOM -> compact dict helpers, dB bisection
-  handlers/                 session, tracks (mixer), clips, devices, browser
+  handlers/                 session, tracks (mixer), clips, scenes, arrangement, devices, browser
 remote_script/tests/        pytest on Python 3.11 with a fake Live (fake_live.py)
 server/                     MCP server (uv project)
   src/abletonconnect/       client.py (bridge client), server.py (MCP tools)
@@ -192,6 +194,30 @@ That file is git-ignored; read it when it exists.
   playing until the next bar.
 - With a copy install (`scripts/install.sh --copy`), rerun it after every
   change under `remote_script/`, then restart Live.
+
+## Scenes, tracks and the Arrangement
+
+- `arrange_scenes` (`handlers/arrangement.py`) lays scenes out back to back.
+  A looping MIDI clip becomes one timeline clip per section via
+  `Track.create_midi_clip` (Live 12), with its notes repeated to fill it; audio
+  clips go through `Track.duplicate_clip_to_arrangement` (Live 11) end to end.
+  The API can't set an arrangement clip's length, which is why MIDI is
+  rebuilt rather than copied. Positions are quarter-note beats:
+  `beats_per_bar = numerator * 4 / denominator`.
+- It does everything in one handler call, one tick, so it's one undo step.
+  Don't turn it into a multi-tick generator: changes from different ticks
+  become separate undo steps.
+- `set_device_parameter` takes display text ("120 Hz", "1.2 kHz", "350 ms",
+  "1/4"). Continuous parameters bisect `str_for_value` like the dB code;
+  units are normalized (kHz -> Hz, s -> ms) so prefix changes don't break it.
+- Live reports tempo-synced rates (Auto Pan "Rate", Delay synced times) as
+  continuous 0-21 with no `value_items`. `lom.stepped_items` spots them (the
+  display halfway between two steps matches one of them) and lists the
+  options.
+- Return tracks list a send to themselves in `mixer_device.sends`; it does
+  nothing, so it's hidden and rejected.
+- Only automatable parameters appear in `device.parameters`. Drift's Voice
+  Mode and mod matrix routing aren't there.
 
 ## Conventions
 

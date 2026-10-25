@@ -207,8 +207,97 @@ def test_set_device_parameter_errors(operator):
     assert "whole steps" in failure(d, "set_device_parameter", track_index=0, parameter="Filter Type", value=0.5)["message"]
     assert "disabled" in failure(d, "set_device_parameter", track_index=0, parameter="Locked", value=1)["message"]
     assert "exactly one" in failure(d, "set_device_parameter", track_index=0, parameter=1)["message"]
-    assert "continuous" in failure(d, "set_device_parameter", track_index=0, parameter="Filter Freq", value="high")["message"]
+    assert "Can't read 'high'" in failure(d, "set_device_parameter", track_index=0, parameter="Filter Freq", value="high")["message"]
     assert failure(d, "get_device_parameters", track_index=0, device_index=4)["type"] == "not_found"
+
+
+def test_set_parameter_by_display_value(operator, live):
+    d = operator
+    song, _ = live
+    steps = song.undo_steps
+    out = result(d, "set_device_parameter", track_index=0, parameter="Filter Freq", value="120 Hz")
+    assert out["parameter"]["display"] == "120.0 Hz"
+    assert result(d, "set_device_parameter", track_index=0, parameter="Filter Freq", value="1.2 kHz")["parameter"]["display"] == "1.20 kHz"
+    assert result(d, "set_device_parameter", track_index=0, parameter="Filter Freq", value="2500")["parameter"]["display"] == "2.50 kHz"
+    assert result(d, "set_device_parameter", track_index=0, parameter="Env Decay", value="350 ms")["parameter"]["display"] == "350.0 ms"
+    assert result(d, "set_device_parameter", track_index=0, parameter="Env Decay", value="2.5 s")["parameter"]["display"] == "2.50 s"
+    assert result(d, "set_device_parameter", track_index=0, parameter="F1 Freq", value="400")["parameter"]["display"] == "400"
+    assert result(d, "set_device_parameter", track_index=0, parameter="F1 Freq", value="2.5k")["parameter"]["display"] == "2.5k"
+    assert song.undo_steps == steps + 7  # one undo step per call, however many probes it took
+    assert "outside" in failure(d, "set_device_parameter", track_index=0, parameter="Filter Freq", value="40 kHz")["message"]
+    assert "different units" in failure(d, "set_device_parameter", track_index=0, parameter="Filter Freq", value="300 ms")["message"]
+
+
+def test_stepped_parameters_list_and_take_their_options(operator):
+    d = operator
+    params = {p["name"]: p for p in result(d, "get_device_parameters", track_index=0)["parameters"]}
+    assert params["LFO Rate"]["items"][12] == "1/4" and "quantized" not in params["LFO Rate"]
+    assert "items" not in params["Filter Freq"]
+    out = result(d, "set_device_parameter", track_index=0, parameter="LFO Rate", value="1/4")
+    assert out["parameter"]["value"] == 12 and out["parameter"]["display"] == "1/4"
+    assert "Options: 8, 6, 4" in failure(d, "set_device_parameter", track_index=0, parameter="LFO Rate", value="1/5")["message"]
+    assert result(d, "set_device_parameter", track_index=0, parameter="Transpose", value="+7 st")["parameter"]["value"] == 7
+    assert result(d, "set_device_parameter", track_index=0, parameter="Transpose", value="-12")["parameter"]["value"] == -12
+
+
+def test_parse_display():
+    from LiveBridge.lom import parse_display
+
+    assert parse_display("1.20 kHz") == (1200.0, "hz")
+    assert parse_display("350 ms") == (350.0, "ms") and parse_display("2.5 s") == (2500.0, "ms")
+    assert parse_display("-inf dB") == (float("-inf"), "db")
+    assert parse_display("25L") == (-25.0, "pan") and parse_display("C") == (0.0, "pan")
+    assert parse_display("4.00 : 1") == (4.0, "")
+    assert parse_display("22.0k") == (22000.0, "") and parse_display("400") == (400.0, "")
+    assert parse_display("Lowpass") is None
+
+
+# ---- tracks and scenes --------------------------------------------------------------------------
+
+
+def test_rename_arm_and_delete_tracks(d, live):
+    song, _ = live
+    out = result(d, "set_track", track_index=0, name="Kick", arm=True)
+    assert out["name"] == "Kick" and out["arm"] is True
+    assert "can't be armed" in failure(d, "set_track", track_index=0, track_type="return", arm=True)["message"]
+    assert "Nothing to change" in failure(d, "set_track", track_index=0)["message"]
+    out = result(d, "delete_track", track_index=0)
+    assert out["deleted"]["name"] == "Kick" and out["remaining"] == [{"index": 0, "name": "2-Audio"}]
+    assert "at least one" in failure(d, "delete_track", track_index=0)["message"]
+    assert "master" in failure(d, "delete_track", track_index=0, track_type="master")["message"]
+    out = result(d, "delete_track", track_index=1, track_type="return")
+    assert out["remaining"] == [{"index": 0, "name": "A-Reverb"}]
+    assert len(song.tracks[0].mixer_device.sends) == 1
+
+
+def test_returns_never_list_a_send_to_themselves(d):
+    info = result(d, "get_track_info", track_index=0, track_type="return")
+    assert [s["return"] for s in info["mixer"]["sends"]] == ["B-Delay"]
+    assert "itself" in failure(d, "set_mixer", track_index=0, track_type="return", sends={0: 0.5})["message"]
+    out = result(d, "set_mixer", track_index=0, track_type="return", sends={1: 0.5})
+    assert out["sends"] == [{"index": 1, "return": "B-Delay", "value": 0.5, "display": out["sends"][0]["display"]}]
+
+
+def test_scenes(d, live):
+    song, _ = live
+    result(d, "create_clip", track_index=0, clip_slot_index=1)
+    out = result(d, "create_scene", index=1, name="Build")
+    assert out["created"] == {"index": 1, "name": "Build", "clips": 0} and out["scene_count"] == 9
+    assert result(d, "set_scene", scene_index=2, name="Drop") == {"index": 2, "name": "Drop", "clips": 1, "previous_name": ""}
+    info = result(d, "get_session_info")
+    assert info["scenes"] == 9 and info["scene_names"][:3] == ["", "Build", "Drop"]
+    fired = result(d, "fire_scene", scene_index=2)
+    assert fired["launching"] == 1 and fired["transport_playing"] is True
+    assert result(d, "delete_scene", scene_index=1)["scene_count"] == 8
+    assert failure(d, "set_scene", scene_index=40, name="x")["type"] == "not_found"
+
+
+def test_set_scale(d, live):
+    song, _ = live
+    assert result(d, "set_scale", root="E", scale="phrygian") == {"scale": "E Phrygian", "previous": "C Major"}
+    assert result(d, "set_scale", root="Bb")["scale"] == "A# Phrygian"
+    assert "no scale called" in failure(d, "set_scale", scale="Lydian Augmented")["message"]
+    assert "note name" in failure(d, "set_scale", root="H")["message"]
 
 
 # ---- browser ------------------------------------------------------------------------------------

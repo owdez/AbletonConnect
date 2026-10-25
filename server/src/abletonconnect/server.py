@@ -25,8 +25,10 @@ INSTRUCTIONS = """\
 Controls the Ableton Live set that's open on this Mac.
 - Start with get_session_info. All indices are 0-based: tracks, clip slots (one per scene), devices, parameters, sends.
 - Every tool returns the state after the change. Each change is one Live undo step; `undo` reverts the last one.
-- Clips are Session View clips. Times and lengths are in beats (quarter notes); 4.0 is one bar of 4/4.
-- Volume: prefer volume_db. Raw fader value 0.85 is 0 dB.
+- Clips live in Session View slots (one per scene). Times and lengths are in beats (quarter notes); 4.0 is one bar
+  of 4/4. To build a song: one scene per section, name them with set_scene, then arrange_scenes puts the sections
+  on the Arrangement timeline.
+- Volume: prefer volume_db. Raw fader value 0.85 is 0 dB. Device parameters take what Live displays: '120 Hz', '350 ms', '1/4'.
 - Find sounds with search_browser or browse_browser, then load_browser_item with the returned path.
 - For samples on disk, use search_samples first: it searches a local index of the sample folders (BPM, key, loop or
   one-shot, root note, brightness) instantly. Load a result with load_browser_item(path=<its browser_path>).
@@ -71,15 +73,17 @@ def _track(track_index: int | None, track_type: str) -> dict[str, Any]:
 
 @mcp.tool(annotations=READ, structured_output=False)
 async def get_session_info() -> str:
-    """Overview of the open set: tempo, signature, transport, scale, scene count, and every track,
-    return and master with mute/solo/arm, volume, device names and clip count."""
+    """Overview of the open set: tempo, signature, transport, scale, scene count and names, and every
+    track, return and master with mute/solo/arm, volume, device names, Session clip count and
+    Arrangement clip count."""
     return await call("get_session_info", mutating=False)
 
 
 @mcp.tool(annotations=READ, structured_output=False)
 async def get_track_info(track_index: TrackIndex = None, track_type: TrackTypeArg = "track") -> str:
     """One track in detail: routing, mixer (volume, pan, sends with return names), devices with
-    parameter counts, and every Session View clip with its slot index."""
+    parameter counts, every Session View clip with its slot index, and its Arrangement clips with
+    start and end bars."""
     return await call("get_track_info", _track(track_index, track_type), mutating=False)
 
 
@@ -87,6 +91,17 @@ async def get_track_info(track_index: TrackIndex = None, track_type: TrackTypeAr
 async def set_tempo(bpm: Annotated[float, Field(ge=20, le=999)]) -> str:
     """Set the song tempo in BPM. Returns the new and previous tempo."""
     return await call("set_tempo", {"bpm": bpm}, mutating=True)
+
+
+@mcp.tool(annotations=WRITE, structured_output=False)
+async def set_scale(
+    root: Annotated[int | str | None, Field(description="Root note: 'E', 'F#', 'Bb', or 0-11 (0 = C).")] = None,
+    scale: Annotated[
+        str | None, Field(description="A name from Live's Scale chooser: 'Major', 'Minor', 'Dorian', 'Phrygian'...")
+    ] = None,
+) -> str:
+    """Set the song's scale (Live 12's Scale chooser), which MIDI tools and scale-aware devices follow."""
+    return await call("set_scale", {"root": root, "scale": scale}, mutating=True)
 
 
 @mcp.tool(annotations=WRITE, structured_output=False)
@@ -128,6 +143,31 @@ async def create_audio_track(
 ) -> str:
     """Create an audio track. Returns the new track and its index."""
     return await call("create_audio_track", {"index": index, "name": name}, mutating=True)
+
+
+@mcp.tool(annotations=WRITE, structured_output=False)
+async def set_track(
+    track_index: TrackIndex = None,
+    track_type: TrackTypeArg = "track",
+    name: Annotated[str | None, Field(min_length=1, description="New track name.")] = None,
+    arm: Annotated[bool | None, Field(description="Record-arm (audio and MIDI tracks only).")] = None,
+) -> str:
+    """Rename a track or change its record arm. Only the fields you pass change."""
+    args = _track(track_index, track_type)
+    args.update(name=name, arm=arm)
+    return await call("set_track", args, mutating=True)
+
+
+@mcp.tool(annotations=REPLACE, structured_output=False)
+async def delete_track(
+    track_index: Annotated[
+        int, Field(ge=0, description="0-based index into tracks, or returns with track_type='return'.")
+    ],
+    track_type: Annotated[Literal["track", "return"], Field(description="'track' (default) or 'return'.")] = "track",
+) -> str:
+    """Delete a track or return track with its clips and devices (undoable). Later tracks move up one
+    index; the result lists the remaining tracks with their new indices."""
+    return await call("delete_track", {"track_index": track_index, "track_type": track_type}, mutating=True)
 
 
 @mcp.tool(annotations=WRITE, structured_output=False)
@@ -257,7 +297,9 @@ async def get_device_parameters(
     limit: Annotated[int, Field(ge=1, le=2048)] = 256,
 ) -> str:
     """List a device's parameters: index, name, raw value, min, max, and Live's display string.
-    Quantized parameters also list their options (items). Rack macros are the rack's parameters."""
+    Parameters with a fixed set of options (filter types, tempo-synced rates like '1/4') list them as
+    items. Rack macros are the rack's parameters. Only parameters Live exposes for automation appear:
+    some device settings (Drift's Voice Mode, its mod matrix routing) have none and can't be changed."""
     args = _track(track_index, track_type)
     args.update(device_index=device_index, name_filter=name_filter, limit=limit)
     return await call("get_device_parameters", args, mutating=False)
@@ -272,13 +314,14 @@ async def set_device_parameter(
     value: Annotated[
         float | str | None,
         Field(
-            description="Raw value between the parameter's min and max, or an option name for quantized parameters (e.g. 'Lowpass')."
+            description="What Live displays: '120 Hz', '1.2 kHz', '350 ms', '-6 dB', '25 %', or an option like 'Lowpass' or '1/4'. Or a raw number between the parameter's min and max."
         ),
     ] = None,
     normalized: Annotated[float | None, Field(ge=0, le=1, description="0-1 across the parameter's range.")] = None,
 ) -> str:
-    """Set one device parameter. Pass exactly one of value or normalized. Returns the new value with
-    Live's display string (e.g. '1.20 kHz') and the previous one."""
+    """Set one device parameter in one call and one undo step. Pass exactly one of value or
+    normalized. Text values are matched against Live's own display, so curved controls like filter
+    frequency land exactly. Returns the new value with Live's display string and the previous one."""
     if (value is None) == (normalized is None):
         raise ToolError("Pass exactly one of value or normalized.")
     args = _track(track_index, track_type)
@@ -338,11 +381,77 @@ async def load_browser_item(
     ] = None,
 ) -> str:
     """Load a device, plugin, preset, or sample onto a track, like double-clicking it in Live's
-    browser. This selects the track in Live. Instruments and effects go on the device chain; a sample
-    on a MIDI track loads into Simpler. Returns the track's device chain afterwards."""
+    browser. This selects the track in Live. An instrument replaces the track's current instrument;
+    effects are added to the device chain; a sample on a MIDI track loads into Simpler. Returns the
+    track's device chain afterwards."""
     args = _track(track_index, track_type)
     args.update(path=path, clip_slot_index=clip_slot_index)
     return await call("load_browser_item", args, mutating=True, timeout=20)
+
+
+# ---- scenes and the arrangement -----------------------------------------------------------------
+
+SceneIndex = Annotated[int, Field(ge=0, description="0-based scene index (= clip slot index).")]
+
+
+@mcp.tool(annotations=WRITE, structured_output=False)
+async def create_scene(
+    index: Annotated[int, Field(description="Insert position; -1 appends at the end.")] = -1,
+    name: str | None = None,
+) -> str:
+    """Create an empty scene (a new row of clip slots on every track)."""
+    return await call("create_scene", {"index": index, "name": name}, mutating=True)
+
+
+@mcp.tool(annotations=WRITE, structured_output=False)
+async def set_scene(scene_index: SceneIndex, name: Annotated[str, Field(description="'' clears the name.")]) -> str:
+    """Name a scene, e.g. after the song section it holds ('Intro', 'Drop')."""
+    return await call("set_scene", {"scene_index": scene_index, "name": name}, mutating=True)
+
+
+@mcp.tool(annotations=REPLACE, structured_output=False)
+async def delete_scene(scene_index: SceneIndex) -> str:
+    """Delete a scene and every clip in its row (undoable). Later scenes move up one index."""
+    return await call("delete_scene", {"scene_index": scene_index}, mutating=True)
+
+
+@mcp.tool(annotations=WRITE, structured_output=False)
+async def fire_scene(scene_index: SceneIndex) -> str:
+    """Launch every clip in a scene, like its launch button (quantized). Starts the transport."""
+    return await call("fire_scene", {"scene_index": scene_index}, mutating=True)
+
+
+class Section(BaseModel):
+    scene: Annotated[int, Field(ge=0, description="Scene index to play.")]
+    bars: Annotated[float, Field(gt=0, le=1024, description="How long the section lasts, in bars.")]
+
+
+@mcp.tool(annotations=REPLACE, structured_output=False)
+async def arrange_scenes(
+    sections: Annotated[
+        list[Section],
+        Field(
+            min_length=1,
+            max_length=64,
+            description="Sections in order, e.g. [{scene: 0, bars: 32}, {scene: 1, bars: 16}].",
+        ),
+    ],
+    start_bar: Annotated[float, Field(ge=1, description="Bar where the first section starts.")] = 1,
+    replace: Annotated[bool, Field(description="Remove timeline clips already in that range first.")] = False,
+    show: Annotated[bool, Field(description="Switch Live to Arrangement View afterwards.")] = True,
+) -> str:
+    """Put scenes on the Arrangement timeline back to back, like recording them into the Arrangement:
+    each track's clip from a section's scene fills that section. A looping MIDI clip becomes one
+    timeline clip as long as the section with its notes repeated; a non-looping clip plays once;
+    audio clips are copied end to end. Tracks with no clip in a scene stay empty there. The whole
+    layout is one undo step. Fails if timeline clips are in the way unless replace is true."""
+    payload = {
+        "sections": [s.model_dump() for s in sections],
+        "start_bar": start_bar,
+        "replace": replace,
+        "show": show,
+    }
+    return await call("arrange_scenes", payload, mutating=True, timeout=60)
 
 
 # ---- sample library (local index, no Live round trip) ----------------------------------------------

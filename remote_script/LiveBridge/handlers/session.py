@@ -5,6 +5,7 @@ from ..lom import find_track_index, get_track, require_number, rnd, safe, track_
 from ..protocol import BridgeError
 
 NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+_FLATS = {"Db": 1, "Eb": 3, "Gb": 6, "Ab": 8, "Bb": 10}
 
 
 @command()
@@ -27,6 +28,9 @@ def get_session_info(ctx):
     if isinstance(root, int) and scale:
         out["scale"] = "%s %s" % (NOTE_NAMES[root % 12], scale)
     out["scenes"] = len(song.scenes)
+    names = [safe(lambda s=s: s.name, "") or "" for s in song.scenes]
+    if any(names):
+        out["scene_names"] = names
     selected_type, selected_index = find_track_index(song, song.view.selected_track)
     if selected_type is not None:
         out["selected_track"] = {"type": selected_type, "index": selected_index}
@@ -53,6 +57,48 @@ def set_tempo(ctx, bpm):
     previous = song.tempo
     song.tempo = bpm
     return {"tempo": rnd(song.tempo, 3), "previous": rnd(previous, 3)}
+
+
+@command(undo=True)
+def set_scale(ctx, root=None, scale=None):
+    """Live 12's song scale (the Scale chooser in the control bar): root note and scale name."""
+    if root is None and scale is None:
+        raise BridgeError("bad_args", "Pass root (like 'E' or 4), scale (like 'Phrygian'), or both.")
+    song = ctx.song
+    if safe(lambda: song.scale_name) is None:
+        raise BridgeError("invalid_state", "This version of Live has no song scale.")
+    previous = _scale_text(song)
+    if root is not None:
+        song.root_note = _root_note(root)
+    if scale is not None:
+        if not isinstance(scale, str) or not scale.strip():
+            raise BridgeError("bad_args", "scale must be a scale name like 'Minor' or 'Phrygian'.")
+        try:
+            song.scale_name = scale
+        except Exception:
+            raise BridgeError("bad_args", "Live has no scale called %r. Use a name from Live's Scale chooser, like 'Minor' or 'Phrygian'." % scale) from None
+        if song.scale_name.lower() != scale.lower():
+            raise BridgeError("bad_args", "Live has no scale called %r (it kept %r). Use a name from Live's Scale chooser." % (scale, song.scale_name))
+    return {"scale": _scale_text(song), "previous": previous}
+
+
+def _root_note(root):
+    if isinstance(root, int) and not isinstance(root, bool):
+        if not 0 <= root <= 11:
+            raise BridgeError("bad_args", "root must be 0-11 (0 = C), got %d." % root)
+        return root
+    if isinstance(root, str):
+        text = root.strip().replace("♯", "#").replace("♭", "b")
+        text = text[:1].upper() + text[1:]
+        if text in NOTE_NAMES:
+            return NOTE_NAMES.index(text)
+        if text in _FLATS:
+            return _FLATS[text]
+    raise BridgeError("bad_args", "root must be a note name like 'E', 'F#' or 'Bb', or 0-11, got %r." % (root,))
+
+
+def _scale_text(song):
+    return "%s %s" % (NOTE_NAMES[song.root_note % 12], song.scale_name)
 
 
 @command()

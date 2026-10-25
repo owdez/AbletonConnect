@@ -99,7 +99,7 @@ async def main() -> int:
     )
     if not opts.yes:
         answer = input(
-            "This adds two tracks and changes tempo/mixer on the open set. Continue? [y/N] "
+            "This adds two tracks, a scene and a timeline clip, and changes tempo/mixer/scale on the open set. Continue? [y/N] "
         )
         if answer.strip().lower() not in ("y", "yes"):
             return 1
@@ -283,6 +283,22 @@ async def main() -> int:
                     or continuous["value"] == out["parameter"]["value"],
                     f"{out['parameter']['name']}: {out['previous']['display']} -> {out['parameter']['display']}",
                 )
+                shown = out["parameter"]["display"]
+                out = await t.step(
+                    "set_device_parameter by display text",
+                    t.run(
+                        "set_device_parameter",
+                        track_index=midi,
+                        parameter=continuous["index"],
+                        value=out["previous"]["display"],
+                    ),
+                )
+                if out:
+                    t.check(
+                        "set_device_parameter by display text",
+                        out["parameter"]["display"] == continuous["display"],
+                        f"{shown} -> {out['parameter']['display']} (asked for {continuous['display']})",
+                    )
         quantized = next(
             (
                 p
@@ -380,6 +396,7 @@ async def main() -> int:
         t.check("stop_playback", out["playing"] is False)
 
     print("\nAudio track and samples")
+    audio = None
     out = await t.step(
         "create_audio_track", t.run("create_audio_track", name="LB smoke audio")
     )
@@ -447,6 +464,66 @@ async def main() -> int:
                 out["kind"] == "audio",
                 f"{len(out['clips'])} clip(s)",
             )
+
+    print("\nTracks, scenes and the Arrangement")
+    out = await t.step(
+        "set_track rename", t.run("set_track", track_index=midi, name="LB smoke MIDI 2")
+    )
+    if out:
+        t.check("set_track rename", out["name"] == "LB smoke MIDI 2")
+    out = await t.step("create_scene", t.run("create_scene", name="LB smoke scene"))
+    if out:
+        scene = out["created"]["index"]
+        renamed = await t.step(
+            "set_scene", t.run("set_scene", scene_index=scene, name="LB smoke renamed")
+        )
+        names = (await t.run("get_session_info", mutating=False)).get("scene_names", [])
+        t.check(
+            "set_scene",
+            bool(renamed) and names[scene : scene + 1] == ["LB smoke renamed"],
+            f"scene {scene}",
+        )
+        out = await t.step("delete_scene", t.run("delete_scene", scene_index=scene))
+        if out:
+            t.check("delete_scene", out["scene_count"] == info["scenes"])
+    previous_scale = (await t.run("get_session_info", mutating=False)).get("scale")
+    out = await t.step("set_scale", t.run("set_scale", root="E", scale="Phrygian"))
+    if out:
+        t.check(
+            "set_scale",
+            out["scale"] == "E Phrygian",
+            f"{out['previous']} -> {out['scale']}",
+        )
+        if previous_scale:
+            root, _, name = previous_scale.partition(" ")
+            await t.step("restore scale", t.run("set_scale", root=root, scale=name))
+    # Far out on the timeline, so it can't collide with anything in the set.
+    out = await t.step(
+        "arrange_scenes",
+        t.run(
+            "arrange_scenes",
+            timeout=60,
+            sections=[{"scene": 0, "bars": 4}],
+            start_bar=2001,
+            show=False,
+        ),
+    )
+    if out:
+        detail = await t.run("get_track_info", mutating=False, track_index=midi)
+        placed = [c for c in detail.get("arrangement", []) if c["start_bar"] == 2001]
+        t.check(
+            "arrange_scenes",
+            out["clips_created"] >= 1 and placed and placed[0]["end_bar"] == 2005,
+            f"{out['clips_created']} clip(s), {placed}",
+        )
+        await t.step("undo arrange_scenes", t.run("undo"))
+        detail = await t.run("get_track_info", mutating=False, track_index=midi)
+        left = [c for c in detail.get("arrangement", []) if c["start_bar"] >= 2001]
+        t.check("one undo removes the layout", not left, f"{len(left)} clip(s) left")
+    if audio is not None:
+        out = await t.step("delete_track", t.run("delete_track", track_index=audio))
+        if out:
+            t.check("delete_track", out["deleted"]["name"] == "LB smoke audio")
 
     return report(t)
 

@@ -152,5 +152,24 @@ async def test_tool_list_matches_bridge_commands(stack):
 
         tools = {t.name for t in (await client.list_tools()).tools}
         local = {"search_samples"}  # answered from the sample index, not by LiveBridge
-        assert len(tools) == 20
+        assert len(tools) == 28
         assert tools - local <= set(COMMANDS)
+
+
+async def test_song_layout_through_every_layer(stack):
+    async with connect() as client:
+        song, main = stack
+        await tool(client, "create_clip", track_index=0, clip_slot_index=0, length=4, name="Intro")
+        notes = [{"pitch": 36, "start": float(i), "duration": 0.25} for i in range(4)]
+        await tool(client, "add_notes", track_index=0, clip_slot_index=0, notes=notes)
+        assert (await tool(client, "set_scene", scene_index=0, name="Intro"))["name"] == "Intro"
+        assert (await tool(client, "set_track", track_index=0, name="Kick"))["name"] == "Kick"
+        assert (await tool(client, "set_scale", root="E", scale="Phrygian"))["scale"] == "E Phrygian"
+        laid = await tool(client, "arrange_scenes", sections=[{"scene": 0, "bars": 8}])
+        assert laid["sections"][0] == {"scene": 0, "name": "Intro", "start_bar": 1.0, "bars": 8.0, "clips": 1}
+        info = await tool(client, "get_track_info", track_index=0)
+        assert info["arrangement"] == [{"name": "Intro", "start_bar": 1.0, "end_bar": 9.0}]
+        out = await tool(client, "set_device_parameter", track_index=0, parameter="Filter Freq", value="120 Hz")
+        assert "No device 0" in out["error"]  # no device yet: errors still come back as tool errors
+        deleted = await tool(client, "delete_track", track_index=1)
+        assert deleted["remaining"] == [{"index": 0, "name": "Kick"}]

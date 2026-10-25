@@ -15,15 +15,16 @@ no telemetry and no outbound network traffic.
 
 ## What Claude can do
 
-20 tools, each returning compact JSON with the state after the change:
+28 tools, each returning compact JSON with the state after the change:
 
 | Area | Tools |
 |---|---|
-| Session | `get_session_info`, `get_track_info`, `set_tempo`, `undo` |
-| Tracks & mixer | `create_midi_track`, `create_audio_track`, `set_mixer` (volume raw or dB, pan, sends, mute, solo) |
+| Session | `get_session_info`, `get_track_info`, `set_tempo`, `set_scale`, `undo` |
+| Tracks & mixer | `create_midi_track`, `create_audio_track`, `set_track` (rename, arm), `delete_track`, `set_mixer` (volume raw or dB, pan, sends, mute, solo) |
 | Clips & notes | `create_clip`, `add_notes`, `get_clip_notes`, `fire_clip`, `stop_clip` |
+| Scenes & Arrangement | `create_scene`, `set_scene` (name), `delete_scene`, `fire_scene`, `arrange_scenes` (lay scenes out on the timeline as song sections) |
 | Transport | `start_playback`, `stop_playback` |
-| Sound design | `get_device_parameters`, `set_device_parameter` (by index or name; raw, normalized, or option name like `"Lowpass"`) |
+| Sound design | `get_device_parameters`, `set_device_parameter` (by index or name; what Live displays, like `"120 Hz"`, `"350 ms"` or `"1/4"`, or raw or normalized values) |
 | Browser | `browse_browser`, `search_browser`, `load_browser_item` (devices, plugins, presets, samples, user folders) |
 | Sample library | `search_samples` (your sample folders by name, loop or one-shot, BPM, key, root note, brightness and length; instant, from a local index) |
 
@@ -107,6 +108,7 @@ Open Live, start a new Claude Code session, and ask in plain language:
 - "Find a dark 808 in F and load it on a new MIDI track."
 - "I need a 90 BPM break, something brighter than the last one."
 - "Drums to -6 dB, hats 20% right, keys to the reverb return at -12 dB."
+- "Name the scenes Intro, Build, Drop and Outro, then lay them out as 32 bars each on the timeline."
 - "Undo that."
 
 If something's wrong, the tool's error says what to do, for example "Ableton
@@ -188,8 +190,12 @@ and the MCP server read it; Live needs a restart to pick up a port change:
 
 ## Limitations
 
-- Session View clips only. No Arrangement editing or automation yet.
-- No deleting tracks, clips or devices. Changes can be undone.
+- The Arrangement can be filled from scenes (`arrange_scenes`), but clips on
+  the timeline can't be edited one by one, and there's no automation yet.
+- Tracks and scenes can be deleted; single clips and devices can't yet.
+- No input, output or sidechain routing yet.
+- Only parameters Live exposes for automation can be set. Some device
+  settings, like Drift's Voice Mode, have no parameter.
 - Devices inside rack chains aren't addressable yet; rack macros are.
 - Browser search walks Live's browser by name and stops after ~15 s on huge
   folders. Use `search_samples` for sample folders.
