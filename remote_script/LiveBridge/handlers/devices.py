@@ -1,18 +1,21 @@
-"""Device parameters on a track's top-level device chain (rack macros included)."""
+"""Devices on a track, including devices inside rack chains and Drum Rack pads."""
 
 import difflib
 
 from ..dispatch import command
 from ..lom import (
+    DEVICE_PROPERTIES,
     device_brief,
-    get_device,
+    device_properties,
     get_track,
     is_plain_value,
+    nested_device_brief,
     param_detail,
     param_display,
     parse_display,
     require_int,
     require_number,
+    resolve_device,
     rnd,
     set_param_value,
     stepped_items,
@@ -22,30 +25,33 @@ from ..protocol import BridgeError
 
 
 @command()
-def get_device_parameters(ctx, track_index=None, device_index=0, track_type="track", name_filter=None, limit=256):
+def get_device_parameters(ctx, track_index=None, device_index=None, device_path=None, track_type="track", name_filter=None, limit=256):
     track = get_track(ctx.song, track_index, track_type)
-    device = get_device(track, device_index)
+    device, path = resolve_device(track, device_index, device_path)
     params = list(device.parameters)
     needle = name_filter.lower() if name_filter else None
     selected = [(i, p) for i, p in enumerate(params) if needle is None or needle in p.name.lower()]
     limit = require_int(limit, "limit")
     out = {
         "track": track.name,
-        "device": device_brief(device, device_index),
+        "device": _brief(device, device_index, path),
         "parameters": [param_detail(p, i) for i, p in selected[:limit]],
     }
     if len(selected) > limit:
         out["truncated"] = True
         out["matching"] = len(selected)
+    properties = _property_details(device)
+    if properties:
+        out["properties"] = properties
     return out
 
 
 @command(undo=True)
-def set_device_parameter(ctx, parameter, track_index=None, device_index=0, track_type="track", value=None, normalized=None):
+def set_device_parameter(ctx, parameter, track_index=None, device_index=None, device_path=None, track_type="track", value=None, normalized=None):
     if (value is None) == (normalized is None):
         raise BridgeError("bad_args", "Pass exactly one of value or normalized.")
     track = get_track(ctx.song, track_index, track_type)
-    device = get_device(track, device_index)
+    device, path = resolve_device(track, device_index, device_path)
     index, param = _find_parameter(device, parameter)
     previous = {"value": rnd(param.value), "display": param_display(param)}
     lo, hi = float(param.min), float(param.max)
@@ -63,12 +69,59 @@ def set_device_parameter(ctx, parameter, track_index=None, device_index=0, track
         target = require_number(value, "value")
 
     state = set_param_value(param, target)
-    return {
-        "track": track.name,
-        "device": device.name,
-        "parameter": {"index": index, "name": param.name, "min": rnd(lo), "max": rnd(hi), "value": state["value"], "display": state["display"]},
-        "previous": previous,
-    }
+    out = {"track": track.name, "device": device.name}
+    if path is not None:
+        out["path"] = path
+    out["parameter"] = {"index": index, "name": param.name, "min": rnd(lo), "max": rnd(hi), "value": state["value"], "display": state["display"]}
+    out["previous"] = previous
+    return out
+
+
+@command(undo=True)
+def set_device_property(ctx, property, value, track_index=None, device_index=None, device_path=None, track_type="track"):
+    """Device settings that aren't automatable parameters, such as Simpler's playback mode."""
+    track = get_track(ctx.song, track_index, track_type)
+    device, path = resolve_device(track, device_index, device_path)
+    known = DEVICE_PROPERTIES.get(device.class_name)
+    if not known:
+        supported = "; ".join("%s: %s" % (cls, ", ".join(props)) for cls, props in sorted(DEVICE_PROPERTIES.items()))
+        raise BridgeError("bad_args", "'%s' (%s) has no settable properties. Supported: %s. Use set_device_parameter for its parameters." % (device.name, device.class_name, supported))
+    if property not in known:
+        raise BridgeError("bad_args", "'%s' has no property %r. It has: %s." % (device.name, property, ", ".join(known)))
+    options = known[property]
+    previous = device_properties(device).get(property)
+    setattr(device, property, _option_index(options, value, property))
+    out = {"track": track.name, "device": device.name}
+    if path is not None:
+        out["path"] = path
+    out["property"] = {"name": property, "value": device_properties(device).get(property), "options": list(options)}
+    out["previous"] = previous
+    return out
+
+
+def _brief(device, device_index, path):
+    if path is None:
+        return device_brief(device, 0 if device_index is None else device_index)
+    return nested_device_brief(device, path)
+
+
+def _property_details(device):
+    known = DEVICE_PROPERTIES.get(device.class_name, {})
+    current = device_properties(device)
+    return [{"name": name, "value": current.get(name), "options": list(options)} for name, options in known.items()]
+
+
+def _option_index(options, value, label):
+    if isinstance(value, int) and not isinstance(value, bool):
+        if not 0 <= value < len(options):
+            raise BridgeError("bad_args", "%s takes 0-%d (%s), got %d." % (label, len(options) - 1, ", ".join(options), value))
+        return value
+    if isinstance(value, str):
+        key = _normalize(value).replace("-", "")
+        for i, option in enumerate(options):
+            if _normalize(option).replace("-", "") == key:
+                return i
+    raise BridgeError("bad_args", "%r isn't an option for %s. Options: %s." % (value, label, ", ".join(options)))
 
 
 def _find_parameter(device, parameter):

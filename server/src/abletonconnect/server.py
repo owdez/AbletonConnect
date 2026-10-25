@@ -316,10 +316,34 @@ async def delete_clip(
 # ---- devices ------------------------------------------------------------------------------------
 
 
+DeviceIndexArg = Annotated[
+    int | None,
+    Field(ge=0, description="0-based index in the track's device chain. Default 0. Omit when using device_path."),
+]
+DevicePathArg = Annotated[
+    list[int] | None,
+    Field(
+        description="A device inside a rack: alternating device and chain indices, e.g. [2, 0, 1] = device 2's chain 0's "
+        "device 1. Drum Rack pads are chains. get_track_info lists each nested device with its path."
+    ),
+]
+
+
+def _device(
+    track_index: int | None, track_type: str, device_index: int | None, device_path: list[int] | None
+) -> dict[str, Any]:
+    if device_index is not None and device_path is not None:
+        raise ToolError("Pass device_index or device_path, not both.")
+    args = _track(track_index, track_type)
+    args.update(device_index=device_index, device_path=device_path)
+    return args
+
+
 @mcp.tool(annotations=READ, structured_output=False)
 async def get_device_parameters(
     track_index: TrackIndex = None,
-    device_index: Annotated[int, Field(ge=0, description="0-based index in the track's device chain.")] = 0,
+    device_index: DeviceIndexArg = None,
+    device_path: DevicePathArg = None,
     track_type: TrackTypeArg = "track",
     name_filter: Annotated[
         str | None, Field(description="Only parameters whose name contains this (case-insensitive).")
@@ -328,10 +352,12 @@ async def get_device_parameters(
 ) -> str:
     """List a device's parameters: index, name, raw value, min, max, and Live's display string.
     Parameters with a fixed set of options (filter types, tempo-synced rates like '1/4') list them as
-    items. Rack macros are the rack's parameters. Only parameters Live exposes for automation appear:
-    some device settings (Drift's Voice Mode, its mod matrix routing) have none and can't be changed."""
-    args = _track(track_index, track_type)
-    args.update(device_index=device_index, name_filter=name_filter, limit=limit)
+    items. A rack's own parameters are its macros; reach the devices inside it with device_path.
+    Simpler also lists its properties (playback_mode: Classic, One-Shot or Slicing), which
+    set_device_property changes. Only parameters Live exposes for automation appear: some device
+    settings (Drift's Voice Mode, its mod matrix routing) have none and can't be changed."""
+    args = _device(track_index, track_type, device_index, device_path)
+    args.update(name_filter=name_filter, limit=limit)
     return await call("get_device_parameters", args, mutating=False)
 
 
@@ -339,7 +365,8 @@ async def get_device_parameters(
 async def set_device_parameter(
     parameter: Annotated[int | str, Field(description="Parameter index, or its exact name (case-insensitive).")],
     track_index: TrackIndex = None,
-    device_index: Annotated[int, Field(ge=0)] = 0,
+    device_index: DeviceIndexArg = None,
+    device_path: DevicePathArg = None,
     track_type: TrackTypeArg = "track",
     value: Annotated[
         float | str | None,
@@ -354,9 +381,50 @@ async def set_device_parameter(
     frequency land exactly. Returns the new value with Live's display string and the previous one."""
     if (value is None) == (normalized is None):
         raise ToolError("Pass exactly one of value or normalized.")
-    args = _track(track_index, track_type)
-    args.update(parameter=parameter, device_index=device_index, value=value, normalized=normalized)
+    args = _device(track_index, track_type, device_index, device_path)
+    args.update(parameter=parameter, value=value, normalized=normalized)
     return await call("set_device_parameter", args, mutating=True)
+
+
+@mcp.tool(annotations=WRITE, structured_output=False)
+async def set_device_property(
+    property: Annotated[
+        Literal["playback_mode", "slicing_playback_mode"],
+        Field(
+            description="Simpler: playback_mode (Classic, One-Shot, Slicing) or slicing_playback_mode (Mono, Poly, Thru)."
+        ),
+    ],
+    value: Annotated[
+        str | int, Field(description="An option name like 'Classic' or 'One-Shot', or its 0-based index.")
+    ],
+    track_index: TrackIndex = None,
+    device_index: DeviceIndexArg = None,
+    device_path: DevicePathArg = None,
+    track_type: TrackTypeArg = "track",
+) -> str:
+    """Change a device setting that isn't an automatable parameter, in one undo step. Today that's
+    Simpler's playback mode. One-Shot plays the sample with Fade In and Fade Out and ignores the
+    volume envelope (Ve Attack, Ve Decay, Ve Sustain, Ve Release), so switch to Classic to shape
+    a sound's decay with it."""
+    args = _device(track_index, track_type, device_index, device_path)
+    args.update(property=property, value=value)
+    return await call("set_device_property", args, mutating=True)
+
+
+# ---- meters -------------------------------------------------------------------------------------
+
+
+@mcp.tool(annotations=READ, structured_output=False)
+async def get_meters(
+    duration: Annotated[float, Field(ge=2.5, le=10, description="Seconds to listen.")] = 3.0,
+) -> str:
+    """Measure every track, return and the master while the set plays, from the meters Live draws
+    next to each fader (post-fader). Returns peak_db (the highest peak) and avg_db (the average
+    level, a rough guide to how loud it sits) in dBFS. Tracks with no signal show silent; over
+    means a peak above 0 dBFS. A muted track still shows the level it would play at, marked mute.
+    Start playback first: with the transport stopped it returns an error. Waits out the meters' fall time, so a fader move or mute just before the call is
+    measured correctly. These are peak meters, not RMS or LUFS."""
+    return await call("get_meters", {"duration": duration}, mutating=False, timeout=duration + 10)
 
 
 # ---- browser ------------------------------------------------------------------------------------

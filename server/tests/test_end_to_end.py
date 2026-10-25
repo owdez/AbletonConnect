@@ -152,7 +152,7 @@ async def test_tool_list_matches_bridge_commands(stack):
 
         tools = {t.name for t in (await client.list_tools()).tools}
         local = {"search_samples"}  # answered from the sample index, not by LiveBridge
-        assert len(tools) == 30
+        assert len(tools) == 32
         assert tools - local <= set(COMMANDS)
 
 
@@ -175,3 +175,38 @@ async def test_song_layout_through_every_layer(stack):
         assert "No device 0" in out["error"]  # no device yet: errors still come back as tool errors
         deleted = await tool(client, "delete_track", track_index=1)
         assert deleted["remaining"] == [{"index": 0, "name": "Kick"}]
+
+
+async def test_racks_simpler_and_meters_through_every_layer(stack):
+    async with connect() as client:
+        song, _ = stack
+        song.tracks[0].devices = [fake_live.make_instrument_rack(), fake_live.make_drum_rack()]
+        info = await tool(client, "get_track_info", track_index=0)
+        tom = info["devices"][1]["chains"][1]["devices"][0]
+        assert tom["path"] == [1, 1, 0] and tom["playback_mode"] == "Classic"
+        changed = await tool(
+            client,
+            "set_device_property",
+            track_index=0,
+            device_path=tom["path"],
+            property="playback_mode",
+            value="One-Shot",
+        )
+        assert changed["property"]["value"] == "One-Shot" and changed["previous"] == "Classic"
+        out = await tool(
+            client,
+            "set_device_parameter",
+            track_index=0,
+            device_path=[0, 0, 1],
+            parameter="Filter Type",
+            value="Highpass",
+        )
+        assert out["parameter"]["display"] == "Highpass" and out["path"] == [0, 0, 1]
+        out = await tool(client, "get_device_parameters", track_index=0, device_index=0, device_path=[0])
+        assert "not both" in out["error"]
+
+        assert "transport is stopped" in (await tool(client, "get_meters"))["error"]
+        song.is_playing = True
+        song.master_track.output_meter_left = song.master_track.output_meter_right = 64 / 76  # -6 dBFS
+        meters = await tool(client, "get_meters", duration=2.5)
+        assert meters["master"] == {"name": "Master", "peak_db": -6.0, "avg_db": -6.0} and len(meters["tracks"]) == 2
