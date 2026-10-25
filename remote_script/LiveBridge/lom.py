@@ -91,6 +91,11 @@ def _count_phrase(n, label):
     return "%d %s%s (0-%d)" % (n, label, "" if n == 1 else "s", n - 1)
 
 
+def beats_per_bar(song):
+    """Live's arrangement positions are in quarter-note beats: 4 per bar of 4/4, 3 per bar of 6/8."""
+    return song.signature_numerator * 4.0 / song.signature_denominator
+
+
 def color_hex(value):
     if value is None:
         return None
@@ -128,15 +133,26 @@ def track_brief(track, index, track_type="track"):
     out["devices"] = [d.name for d in track.devices]
     if track_type == "track":
         out["clips"] = sum(1 for s in track.clip_slots if s.has_clip)
+        timeline = len(safe(lambda: track.arrangement_clips, ()) or ())
+        if timeline:
+            out["arrangement_clips"] = timeline
     return out
+
+
+def own_return_index(track, song):
+    """A return track's own index. Live lists a send from a return to itself, but it does nothing."""
+    return next((i for i, t in enumerate(song.return_tracks) if t == track), None)
 
 
 def mixer_state(track, song, track_type="track"):
     mixer = track.mixer_device
     out = {"volume": param_state(mixer.volume), "pan": param_state(mixer.panning)}
     returns = list(song.return_tracks)
+    own = own_return_index(track, song) if track_type == "return" else None
     sends = []
     for i, send in enumerate(mixer.sends):
+        if i == own:
+            continue
         entry = {"index": i, "return": returns[i].name if i < len(returns) else None}
         entry.update(param_state(send))
         sends.append(entry)
@@ -170,7 +186,27 @@ def track_detail(track, index, song, track_type="track"):
         out["clips"] = clips
         out["playing_slot"] = _slot_or_none(safe(lambda: track.playing_slot_index, -1))
         out["fired_slot"] = _slot_or_none(safe(lambda: track.fired_slot_index, -1))
+        timeline = list(safe(lambda: track.arrangement_clips, ()) or ())
+        if timeline:
+            bpb = beats_per_bar(song)
+            out["arrangement"] = [arrangement_clip_brief(c, bpb, i) for i, c in enumerate(timeline[:ARRANGEMENT_LIMIT])]
+            if len(timeline) > ARRANGEMENT_LIMIT:
+                out["arrangement_clips"] = len(timeline)
     return out
+
+
+ARRANGEMENT_LIMIT = 64
+
+
+def arrangement_clip_brief(clip, bpb, index):
+    """A clip on the timeline, positioned in 1-based bars (bar 1 = beat 0). `index` is its place in
+    track.arrangement_clips, which set_clip and delete_clip take as arrangement_index."""
+    return {
+        "index": index,
+        "name": clip.name,
+        "start_bar": rnd(clip.start_time / bpb + 1, 3),
+        "end_bar": rnd(clip.end_time / bpb + 1, 3),
+    }
 
 
 def _slot_or_none(index):
@@ -258,6 +294,10 @@ def param_detail(param, index):
         items = list(safe(lambda: param.value_items, ()) or ())
         if items and len(items) <= 64:
             out["items"] = [str(i) for i in items]
+    else:
+        steps = stepped_items(param)
+        if steps and len(steps) <= 64:
+            out["items"] = steps
     if not safe(lambda: param.is_enabled, True):
         out["enabled"] = False
     return out
@@ -306,6 +346,106 @@ def value_for_db(param, db):
     if parse_db(param_display(param, hi)) - db > 1.0:
         return float(param.min)
     return hi
+
+
+def stepped_items(param, limit=128):
+    """Display strings for a parameter that moves in whole steps but isn't marked quantized.
+
+    Live reports tempo-synced rates (Auto Pan's "Rate", Delay's synced times) as continuous
+    0-21 with displays like "1/4", so value_items is empty. A step parameter shows the same
+    text halfway between two steps; a continuous one shows something in between.
+    """
+    lo, hi = float(param.min), float(param.max)
+    if lo != int(lo) or hi != int(hi) or not 1 <= hi - lo <= limit:
+        return None
+    first, second = param_display(param, lo), param_display(param, lo + 1)
+    if param_display(param, lo + 0.5) not in (first, second):
+        return None
+    return [param_display(param, float(v)) for v in range(int(lo), int(hi) + 1)]
+
+
+# Unit -> (family, factor to the family's base unit), so "950 Hz" and "1.20 kHz" compare.
+_UNITS = {
+    "k": ("", 1000.0),  # Analog's filter shows "22.0k" above 1000 and a bare "400" below
+    "hz": ("hz", 1.0),
+    "khz": ("hz", 1000.0),
+    "ms": ("ms", 1.0),
+    "s": ("ms", 1000.0),
+    "sec": ("ms", 1000.0),
+    "db": ("db", 1.0),
+    "%": ("%", 1.0),
+    "st": ("st", 1.0),
+    "ct": ("ct", 1.0),
+}
+_DISPLAY = re.compile(r"^([-+]?(?:\d+(?:\.\d*)?|\.\d+))\s*([a-z%°]*)")
+_PAN = re.compile(r"^(\d+(?:\.\d+)?)\s*([lr])$")
+
+
+def parse_display(text):
+    """A display string as (number, unit family): '1.20 kHz' -> (1200.0, 'hz'), '2.5 s' -> (2500.0, 'ms'),
+    '-inf dB' -> (-inf, 'db'), '25L' -> (-25.0, 'pan'), 'C' -> (0.0, 'pan'). None if there's no number."""
+    if text is None:
+        return None
+    s = str(text).replace("−", "-").strip().lower()
+    if s in ("c", "center", "centre"):
+        return 0.0, "pan"
+    m = _PAN.match(s)
+    if m:
+        v = float(m.group(1))
+        return (-v if m.group(2) == "l" else v), "pan"
+    if re.match(r"^[-+]?inf", s):
+        unit = re.sub(r"^[-+]?inf\s*", "", s)
+        return (float("-inf") if s.startswith("-") else float("inf")), _UNITS.get(unit, (unit, 1.0))[0]
+    m = _DISPLAY.match(s)
+    if not m:
+        return None
+    family, factor = _UNITS.get(m.group(2), (m.group(2), 1.0))
+    return float(m.group(1)) * factor, family
+
+
+def is_plain_value(text):
+    """'+7 st', '120', '-6 dB': a number with at most a unit, nothing else ('1/4' isn't)."""
+    return re.match(r"^\s*[-+]?(\d+(\.\d*)?|\.\d+)\s*[a-z%°]*\s*$", str(text).replace("−", "-").lower()) is not None
+
+
+def value_for_display(param, text):
+    """The raw value whose display reads `text` ("120 Hz", "1.2 kHz", "350 ms", "-12 dB", "40 %").
+
+    Like value_for_db, this bisects str_for_value, so it works for any monotonic display without
+    knowing Live's curves. A bare number takes the parameter's own unit.
+    """
+    target = parse_display(text)
+    if target is None or math.isnan(target[0]):
+        raise BridgeError("bad_args", "Can't read %r as a value for '%s'. Use what Live displays, like '120 Hz', '350 ms', '-6 dB' or '25 %%'." % (text, param.name))
+    lo, hi = float(param.min), float(param.max)
+    at_lo, at_hi = parse_display(param_display(param, lo)), parse_display(param_display(param, hi))
+    if at_lo is None or at_hi is None or at_lo[1] != at_hi[1]:
+        raise BridgeError("bad_args", "'%s' displays values like %r, which can't be targeted by text. Pass a raw number from %s to %s." % (param.name, param_display(param), rnd(lo), rnd(hi)))
+    unit = at_lo[1]
+    value, wanted_unit = target
+    if wanted_unit and wanted_unit != unit:
+        raise BridgeError("bad_args", "'%s' is shown like %r; %r is in different units." % (param.name, param_display(param, hi), text))
+    rising = at_hi[0] >= at_lo[0]
+    bottom, top = (at_lo[0], at_hi[0]) if rising else (at_hi[0], at_lo[0])
+    slack = 0.005 * max(abs(bottom), abs(top), 1e-9) if not math.isinf(top - bottom) else 0.0
+    if value < bottom - slack or value > top + slack:
+        raise BridgeError("bad_args", "%r is outside '%s' (%s to %s)." % (text, param.name, param_display(param, lo), param_display(param, hi)))
+    a, b = lo, hi
+    for _ in range(60):
+        mid = (a + b) / 2.0
+        shown = parse_display(param_display(param, mid))
+        if shown is None or shown[1] != unit:
+            raise BridgeError("bad_args", "'%s' shows %r partway through its range, so it can't be targeted by text. Pass a raw number instead." % (param.name, param_display(param, mid)))
+        if (shown[0] < value) == rising:
+            a = mid
+        else:
+            b = mid
+
+    def miss(raw):
+        shown = parse_display(param_display(param, raw))[0]
+        return 0.0 if shown == value else abs(shown - value)
+
+    return min((a, b), key=miss)
 
 
 def set_param_value(param, value, label=None):

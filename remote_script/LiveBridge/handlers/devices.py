@@ -3,7 +3,21 @@
 import difflib
 
 from ..dispatch import command
-from ..lom import device_brief, get_device, get_track, param_detail, param_display, require_int, require_number, rnd, set_param_value
+from ..lom import (
+    device_brief,
+    get_device,
+    get_track,
+    is_plain_value,
+    param_detail,
+    param_display,
+    parse_display,
+    require_int,
+    require_number,
+    rnd,
+    set_param_value,
+    stepped_items,
+    value_for_display,
+)
 from ..protocol import BridgeError
 
 
@@ -44,7 +58,7 @@ def set_device_parameter(ctx, parameter, track_index=None, device_index=0, track
         if param.is_quantized:
             target = float(round(target))
     elif isinstance(value, str):
-        target = _value_for_item(param, value)
+        target = _value_for_text(param, value)
     else:
         target = require_number(value, "value")
 
@@ -78,11 +92,27 @@ def _find_parameter(device, parameter):
     raise BridgeError("not_found", "No parameter '%s' on '%s'.%s" % (parameter, device.name, hint))
 
 
-def _value_for_item(param, text):
-    if not param.is_quantized:
-        raise BridgeError("bad_args", "'%s' is continuous. Pass a number from %s to %s (or normalized 0-1)." % (param.name, rnd(param.min), rnd(param.max)))
-    items = [str(i) for i in param.value_items]
-    for i, item in enumerate(items):
-        if item.lower() == text.lower():
+def _value_for_text(param, text):
+    """An option name ("Lowpass", "1/4") or a display value ("120 Hz", "1.2 kHz", "350 ms", "-6 dB")."""
+    if param.is_quantized:
+        options = [str(i) for i in param.value_items]
+    else:
+        options = stepped_items(param)
+        if options is None:
+            return value_for_display(param, text)
+    key = _normalize(text)
+    for i, option in enumerate(options):
+        if _normalize(option) == key:
             return float(param.min) + i
-    raise BridgeError("bad_args", "'%s' isn't an option for '%s'. Options: %s." % (text, param.name, ", ".join(items)))
+    wanted = parse_display(text) if is_plain_value(text) else None
+    if wanted is not None and not param.is_quantized:  # "+7" for a "+7 st" step
+        shown = [parse_display(o) for o in options]
+        close = [(abs(v[0] - wanted[0]), i) for i, v in enumerate(shown) if v is not None and wanted[1] in ("", v[1])]
+        if close and min(close)[0] < 0.5:
+            return float(param.min) + min(close)[1]
+    listed = ", ".join(options) if len(options) <= 32 else ", ".join(options[:32]) + ", ..."
+    raise BridgeError("bad_args", "'%s' isn't an option for '%s'. Options: %s." % (text, param.name, listed))
+
+
+def _normalize(text):
+    return "".join(str(text).replace("−", "-").lower().split())

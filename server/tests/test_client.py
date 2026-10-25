@@ -31,7 +31,10 @@ async def test_round_trip_and_handshake_info(bridge):
     c = client_for(bridge.port)
     assert await c.request("get_session_info", mutating=False) == {"cmd": "get_session_info", "args": {}}
     assert c.info["live_version"] == "12.4.7"
+    task = c._conn.task
     await c.close()
+    assert task.done()  # nothing left pending for a script that exits right away
+    await c.close()  # closing twice is fine
 
 
 async def test_concurrent_requests_matched_by_id_out_of_order(bridge):

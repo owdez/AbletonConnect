@@ -30,12 +30,15 @@ read-only .als parser (tools/) that never talks to Live.
 1. **Bridge + core tools.** LiveBridge Remote Script and an MCP server with
    19 tools: session, track, clip, note, transport, device-parameter, mixer,
    browser and undo. (FastMCP is called `MCPServer` in mcp 2.x:
-   `from mcp.server.mcpserver import MCPServer`.)
+   `from mcp.server.mcpserver import MCPServer`.) Since extended with
+   scenes, track rename/arm/delete, song scale, display-value parameters
+   and `arrange_scenes`, after a real song build hit those gaps.
 2. **Sample library index.** Scan the sample folders and analyze each file
    with librosa (BPM, key, brightness, length, one-shot or loop type) into a
    local index, then add a search tool. This runs outside Live. Live's browser
    is too slow to search big folders. Sample folders are configured per
    machine (see `CLAUDE.local.md`) and may be on drives that aren't mounted.
+   Built: `tools/sampleindex` and the `search_samples` tool (see below).
 3. **JUCE analyzer plugin.** Streams LUFS, RMS, peak, spectrum and
    correlation per track over a local socket, plus mix-analysis tools.
 4. **Read-only .als parser.** Overviews across projects (.als is gzipped
@@ -49,13 +52,17 @@ remote_script/LiveBridge/   Remote Script, loaded by Live (Python 3.11, stdlib o
   server.py                 TCP server and connections (no Live imports)
   dispatch.py               @command registry, undo steps, multi-tick jobs
   lom.py                    LOM -> compact dict helpers, dB bisection
-  handlers/                 session, tracks (mixer), clips, devices, browser
+  handlers/                 session, tracks (mixer), clips, scenes, arrangement, devices, browser
 remote_script/tests/        pytest on Python 3.11 with a fake Live (fake_live.py)
 server/                     MCP server (uv project)
   src/abletonconnect/       client.py (bridge client), server.py (MCP tools)
   tests/                    client vs fake socket; end-to-end through the real bridge code
 analyzer/                   Phase 3: JUCE plugin (not yet)
-tools/                      Phase 2/4 offline tools: sample indexer, .als parser (not yet)
+tools/sampleindex/          Phase 2: sample indexer (own uv project, Python 3.12)
+  src/sampleindex/          names.py (what names say), analyze.py (librosa), scan.py,
+                            db.py (SQLite + FTS5), search.py, config.py, cli.py
+  tests/                    names, config, search and scan (fake analyzer), librosa on generated audio
+tools/                      Phase 4: .als parser (not yet)
 scripts/                    install.sh, tail_log.sh, smoke_test.py
 ```
 
@@ -63,6 +70,50 @@ New commands: add a handler with `@command()` (or `@command(undo=True)` if
 it changes the set) in `remote_script/LiveBridge/handlers/`, then a matching
 tool in `server/src/abletonconnect/server.py` with `mutating=` set correctly.
 Handlers that need more than one tick are generators (see `dispatch.py`).
+`search_samples` is the exception: the server answers it from the sample
+index and never talks to LiveBridge.
+
+## Sample index (Phase 2)
+
+- `sampleindex` the package is **stdlib only**. The server depends on it as an
+  editable path dependency for search (`server/pyproject.toml`). librosa is in
+  its `analyze` dependency group, which `uv run --project tools/sampleindex`
+  installs by default and the server never gets.
+- Settings live in `~/.config/abletonconnect/config.json`: `sample_folders`
+  (paths, or `{"path", "browser"}`) and `sample_index` (default
+  `~/Library/Application Support/AbletonConnect/samples.db`; the
+  `ABLETONCONNECT_SAMPLE_INDEX` env var overrides it, which the tests use).
+- A folder maps to `user_folders/<folder name>` in Live's browser, so results
+  load with the existing `load_browser_item`. Escaping matches
+  `handlers/browser.py`; keep the two in step.
+- Scans are incremental (size + mtime + `ANALYZER_VERSION`). Bump
+  `ANALYZER_VERSION` in `analyze.py` whenever analysis or name parsing
+  changes results. A missing folder (unmounted drive) keeps its rows. A mounted
+  folder with zero audio files keeps them too, in case the drive is half
+  mounted.
+- The server opens the index read-only (WAL), so a scan can run while Claude
+  searches.
+
+Measured on a 4,220-file library (DECAP, breaks packs, analogue drums), with
+file names as ground truth:
+
+- **Loop length beats librosa for tempo.** Loops are cut to whole bars, so
+  `240 / duration * 2^k` gives the tempo up to an octave. That matched the
+  named BPM on 93% of loops; `librosa.feature.tempo` matched 18%. The octave
+  is folded into 70-140 BPM, unless a bare number in the name agrees with the
+  length.
+- **Audio key estimation doesn't work here.** Krumhansl/Temperley/Aarden/
+  Albrecht profiles on CQT/CENS chroma matched named keys 35-45% of the time,
+  so keys come only from names.
+- **pyin reports a pitch in noise.** Root notes are skipped when median
+  spectral flatness is above 0.01. Pitched kicks, toms and 808s sit near 0,
+  hats and claps above 0.02. Notes use Live's naming (C3 = MIDI 60).
+- **Loop or one-shot is a vote.** Name words, the nearest folder name and the
+  audio each add points. Break packs name single hits "Break14 Hit 100BPM",
+  so no single rule works.
+- librosa 1.0's first call in a process JIT-compiles with numba (~30 s); numba
+  caches it, so later runs start fast. A full scan takes ~40-90 s with 7
+  workers.
 
 ## Environment facts (verified with Live 12.4.7 Suite on macOS)
 
@@ -154,6 +205,37 @@ That file is git-ignored; read it when it exists.
 - With a copy install (`scripts/install.sh --copy`), rerun it after every
   change under `remote_script/`, then restart Live.
 
+## Scenes, tracks and the Arrangement
+
+- `arrange_scenes` (`handlers/arrangement.py`) lays scenes out back to back.
+  A looping MIDI clip becomes one timeline clip per section via
+  `Track.create_midi_clip` (Live 12), with its notes repeated to fill it; audio
+  clips go through `Track.duplicate_clip_to_arrangement` (Live 11) end to end.
+  The API can't set an arrangement clip's length, which is why MIDI is
+  rebuilt rather than copied. Positions are quarter-note beats:
+  `beats_per_bar = numerator * 4 / denominator`.
+- A MIDI clip with no notes inside its section (a riser at the end of a
+  32-bar clip in a 24-bar section) is skipped, not placed empty, and listed
+  in `skipped_empty`. It restores the playhead: Live moves it to each clip
+  `create_midi_clip` makes.
+- Timeline clips are addressed by their index in `track.arrangement_clips`
+  (`arrangement_index` in `set_clip` / `delete_clip`, listed by
+  `get_track_info`).
+- It does everything in one handler call, one tick, so it's one undo step.
+  Don't turn it into a multi-tick generator: changes from different ticks
+  become separate undo steps.
+- `set_device_parameter` takes display text ("120 Hz", "1.2 kHz", "350 ms",
+  "1/4"). Continuous parameters bisect `str_for_value` like the dB code;
+  units are normalized (kHz -> Hz, s -> ms) so prefix changes don't break it.
+- Live reports tempo-synced rates (Auto Pan "Rate", Delay synced times) as
+  continuous 0-21 with no `value_items`. `lom.stepped_items` spots them (the
+  display halfway between two steps matches one of them) and lists the
+  options.
+- Return tracks list a send to themselves in `mixer_device.sends`; it does
+  nothing, so it's hidden and rejected.
+- Only automatable parameters appear in `device.parameters`. Drift's Voice
+  Mode and mod matrix routing aren't there.
+
 ## Conventions
 
 - **Never crash Live.** Every handler, listener, thread body and pump tick is
@@ -193,10 +275,16 @@ That file is git-ignored; read it when it exists.
   Live doesn't need a restart for those.
 - Debug with Log.txt: `scripts/tail_log.sh` (filters LiveBridge lines) and
   `scripts/install.sh --check` (install, log lines since Live started, port).
+- Sample index: `uv run --project tools/sampleindex sampleindex scan` (add
+  `--force` to re-analyze everything), `sampleindex stats`, and
+  `sampleindex search "dark kick" --kind oneshot`.
 - Tests:
   - `cd server && uv run pytest`: client against a fake LiveBridge socket, plus
     end-to-end through the real bridge code and a fake Live.
   - `uv run --no-project --python 3.11 --with pytest -- python -m pytest remote_script/tests`:
     the Remote Script on Live's Python version.
+  - `cd tools/sampleindex && uv run pytest`: the indexer, including librosa on
+    generated audio.
 - Smoke test with Live open on an empty set: `uv run --project server python scripts/smoke_test.py`.
-- Lint: `cd server && uv run ruff check src tests && uv run ruff format src tests`.
+- Lint: `cd server && uv run ruff check src tests && uv run ruff format src tests`,
+  and the same in `tools/sampleindex`.

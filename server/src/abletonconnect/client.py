@@ -132,8 +132,16 @@ class LiveClient:
         raise AssertionError("unreachable")
 
     async def close(self) -> None:
-        if self._conn is not None:
-            self._drop(self._conn, "client closed")
+        conn = self._conn
+        if conn is None:
+            return
+        self._drop(conn, "client closed")
+        # Let the read loop finish, so a script that exits right after close() doesn't leave a
+        # pending task behind ("Task was destroyed but it is pending!").
+        task = conn.task
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     # ---- internals --------------------------------------------------------------------------
 

@@ -95,15 +95,36 @@ class FakeDevice:
         self.parameters = parameters if parameters is not None else [FakeParam("Device On", 1.0, 0.0, 1.0, quantized=True, items=("Off", "On"))]
 
 
+def freq_display(v):
+    # Like Live's filter frequency: exponential 20 Hz-20 kHz, switching to kHz at 1000.
+    hz = 20 * 1000**v
+    return "%.2f kHz" % (hz / 1000) if hz >= 1000 else "%.1f Hz" % hz
+
+
+def time_display(v):
+    # 1 ms - 60 s, exponential, switching to seconds at 1000 ms.
+    ms = 10 ** (v * math.log10(60000))
+    return "%.2f s" % (ms / 1000) if ms >= 1000 else "%.1f ms" % ms
+
+
+SYNC_RATES = ("8", "6", "4", "3", "2", "1.5", "1", "3/4", "1/2", "3/8", "1/3", "5/16", "1/4", "3/16", "1/6", "1/8", "1/12", "1/16", "1/24", "1/32", "1/48", "1/64")
+
+
 def make_operator():
     return FakeDevice(
         "Operator",
         parameters=[
             FakeParam("Device On", 1.0, 0.0, 1.0, quantized=True, items=("Off", "On")),
-            FakeParam("Filter Freq", 0.5, 0.0, 1.0, display=lambda v: "%.0f Hz" % (20 * 1000 ** v)),
+            FakeParam("Filter Freq", 0.5, 0.0, 1.0, display=freq_display),
             FakeParam("Filter Type", 0.0, 0.0, 2.0, quantized=True, items=("Lowpass", "Highpass", "Bandpass")),
             FakeParam("Osc-A Level", 1.0, 0.0, 1.0),
             FakeParam("Locked", 0.0, 0.0, 1.0, enabled=False),
+            # Live reports synced rates as continuous 0-21 with no value_items.
+            FakeParam("LFO Rate", 6.0, 0.0, 21.0, display=lambda v: SYNC_RATES[int(round(v))]),
+            FakeParam("Env Decay", 0.5, 0.0, 1.0, display=time_display),
+            FakeParam("Transpose", 0.0, -48.0, 48.0, display=lambda v: "%+d st" % round(v) if round(v) else "0 st"),
+            # Analog's cutoff: no unit, "k" above 1000 ("22.0k", "400").
+            FakeParam("F1 Freq", 1.0, 0.0, 1.0, display=lambda v: "%.1fk" % (30 * 733.3**v / 1000) if 30 * 733.3**v >= 1000 else "%.0f" % (30 * 733.3**v)),
         ],
     )
 
@@ -127,9 +148,14 @@ class FakeNote:
 
 
 class FakeClip:
-    def __init__(self, length, midi=True, name=""):
+    def __init__(self, length, midi=True, name="", start_time=0.0):
         self.name = name
+        self.color = 0x00BFAF
         self.length = float(length)
+        self.start_time = float(start_time)  # position on the timeline (arrangement clips)
+        self.end_time = float(start_time) + float(length)
+        self.start_marker = 0.0
+        self.end_marker = float(length)
         self.is_midi_clip = midi
         self.is_audio_clip = not midi
         self.looping = True
@@ -197,6 +223,11 @@ class FakeClipSlot:
         if self.clip is not None:
             self.clip.is_triggered = True
 
+    def delete_clip(self):
+        if self.clip is None:
+            raise RuntimeError("No clip in slot")
+        self.clip = None
+
     def stop(self):
         self.is_triggered = False
         if self.clip is not None:
@@ -232,6 +263,7 @@ class FakeTrack:
         self.fired_slot_index = -1
         self.input_routing_type = Routing("All Ins")
         self.output_routing_type = Routing("Master")
+        self.arrangement_clips = []
 
     @property
     def mute(self):
@@ -248,6 +280,43 @@ class FakeTrack:
     def stop_all_clips(self):
         for slot in self.clip_slots:
             slot.stop()
+
+    # Arrangement (Live 11/12 API)
+
+    def create_midi_clip(self, start_time, length):
+        if not self.has_midi_input:
+            raise RuntimeError("Clips can only be created on MIDI tracks")
+        if not 0 <= start_time <= 1576800:
+            raise RuntimeError("Time out of range")
+        clip = FakeClip(length, midi=True, start_time=start_time)
+        self.arrangement_clips.append(clip)
+        return clip
+
+    def duplicate_clip_to_arrangement(self, clip, destination_time):
+        if clip.is_midi_clip != self.has_midi_input:
+            raise RuntimeError("Clip type doesn't match the track")
+        copy = FakeClip(clip.length, midi=clip.is_midi_clip, name=clip.name, start_time=destination_time)
+        copy._notes = list(clip._notes)
+        self.arrangement_clips.append(copy)
+
+    def delete_clip(self, clip):
+        self.arrangement_clips.remove(clip)
+
+
+class FakeScene:
+    def __init__(self, song, name=""):
+        self._song = song
+        self.name = name
+
+    def fire(self, force_legato=False, can_select_scene_on_launch=True):
+        index = self._song.scenes.index(self)
+        for track in self._song.tracks:
+            if index < len(track.clip_slots) and track.clip_slots[index].has_clip:
+                track.clip_slots[index].fire()
+        self._song.is_playing = True
+
+
+SCALES = ("Major", "Minor", "Dorian", "Mixolydian", "Lydian", "Phrygian", "Locrian", "Harmonic Minor")
 
 
 class SongView:
@@ -269,8 +338,8 @@ class FakeSong:
         self.loop_length = 16.0
         self.metronome = False
         self.root_note = 0
-        self.scale_name = "Major"
-        self.scenes = [object() for _ in range(n_scenes)]
+        self._scale_name = "Major"
+        self.scenes = [FakeScene(self) for _ in range(n_scenes)]
         self.return_tracks = [FakeTrack("A-Reverb", "return", n_sends=2), FakeTrack("B-Delay", "return", n_sends=2)]
         self.tracks = [FakeTrack("1-MIDI", "midi", n_scenes, n_sends=2), FakeTrack("2-Audio", "audio", n_scenes, n_sends=2)]
         self.master_track = FakeTrack("Master", "master")
@@ -291,6 +360,17 @@ class FakeSong:
             raise RuntimeError("Tempo out of range")
         self._tempo = float(value)
         self.undo_log.append(("tempo", value))
+
+    @property
+    def scale_name(self):
+        return self._scale_name
+
+    @scale_name.setter
+    def scale_name(self, name):
+        match = [s for s in SCALES if s.lower() == name.lower()]
+        if not match:
+            raise RuntimeError("Invalid scale name")
+        self._scale_name = match[0]
 
     @property
     def can_undo(self):
@@ -318,6 +398,31 @@ class FakeSong:
 
     def create_midi_track(self, index=-1):
         self._new_track("midi", index)
+
+    def delete_track(self, index):
+        if len(self.tracks) == 1:
+            raise RuntimeError("Cannot delete the last track")
+        del self.tracks[index]
+
+    def delete_return_track(self, index):
+        del self.return_tracks[index]
+        for track in self.tracks + self.return_tracks:
+            del track.mixer_device.sends[index]
+
+    def create_scene(self, index=-1):
+        scene = FakeScene(self)
+        at = len(self.scenes) if index == -1 else index
+        self.scenes.insert(at, scene)
+        for track in self.tracks:
+            track.clip_slots.insert(at, FakeClipSlot(track))
+        return scene
+
+    def delete_scene(self, index):
+        if len(self.scenes) == 1:
+            raise RuntimeError("Cannot delete the last scene")
+        del self.scenes[index]
+        for track in self.tracks:
+            del track.clip_slots[index]
 
     def create_audio_track(self, index=-1):
         self._new_track("audio", index)
@@ -420,9 +525,18 @@ class FakeBrowser:
             track.devices.append(FakeDevice(item.name))
 
 
+class AppView:
+    def __init__(self):
+        self.shown = []
+
+    def show_view(self, name):
+        self.shown.append(name)
+
+
 class FakeApplication:
     def __init__(self, song):
         self.browser = FakeBrowser(song)
+        self.view = AppView()
 
     def get_major_version(self):
         return 12

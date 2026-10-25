@@ -1,9 +1,9 @@
-"""Session View clips and MIDI notes (Live 11+ note API)."""
+"""Clips (Session View, plus renaming and deleting timeline clips) and MIDI notes (Live 11+ note API)."""
 
 import Live
 
 from ..dispatch import WAIT, command
-from ..lom import clip_summary, get_clip, get_clip_slot, get_track, require_int, require_number, rnd, safe
+from ..lom import arrangement_clip_brief, beats_per_bar, clip_summary, get_clip, get_clip_slot, get_track, require_int, require_number, rnd, safe
 from ..protocol import BridgeError
 
 MAX_NOTES = 10000
@@ -98,6 +98,54 @@ def stop_clip(ctx, track_index, clip_slot_index=None):
     if out["playing_slot"] is not None and song.is_playing:
         out["note"] = "Live stops clips at the next launch-quantization boundary (usually the next bar)."
     return out
+
+
+@command(undo=True)
+def set_clip(ctx, track_index, name, clip_slot_index=None, arrangement_index=None):
+    """Rename a Session clip (by slot) or a timeline clip (by its index in get_track_info's arrangement list)."""
+    if not isinstance(name, str):
+        raise BridgeError("bad_args", "name must be text.")
+    song = ctx.song
+    track = get_track(song, track_index, "track")
+    clip, describe = _target_clip(song, track, clip_slot_index, arrangement_index)
+    previous = clip.name
+    clip.name = name
+    out = {"track": track.name, "clip": describe(), "previous_name": previous}
+    return out
+
+
+@command(undo=True)
+def delete_clip(ctx, track_index, clip_slot_index=None, arrangement_index=None):
+    """Delete a Session clip (by slot) or a timeline clip (by arrangement index)."""
+    song = ctx.song
+    track = get_track(song, track_index, "track")
+    clip, describe = _target_clip(song, track, clip_slot_index, arrangement_index)
+    deleted = describe()
+    if clip_slot_index is not None:
+        get_clip_slot(track, clip_slot_index).delete_clip()
+    else:
+        track.delete_clip(clip)
+    out = {"track": track.name, "deleted": deleted}
+    if arrangement_index is not None:
+        out["arrangement_clips"] = len(list(track.arrangement_clips))
+        out["note"] = "Later timeline clips on this track moved down one index."
+    return out
+
+
+def _target_clip(song, track, clip_slot_index, arrangement_index):
+    """(clip, describe) for exactly one of a Session slot or a timeline index."""
+    if (clip_slot_index is None) == (arrangement_index is None):
+        raise BridgeError("bad_args", "Pass exactly one of clip_slot_index (Session View) or arrangement_index (timeline).")
+    if clip_slot_index is not None:
+        clip = get_clip(track, clip_slot_index)
+        return clip, lambda: clip_summary(clip, clip_slot_index, notes=False)
+    require_int(arrangement_index, "arrangement_index")
+    timeline = list(safe(lambda: track.arrangement_clips, ()) or ())
+    if not 0 <= arrangement_index < len(timeline):
+        count = "no timeline clips" if not timeline else "%d timeline clips (0-%d)" % (len(timeline), len(timeline) - 1)
+        raise BridgeError("not_found", "No timeline clip %d on '%s'. It has %s; get_track_info lists them." % (arrangement_index, track.name, count))
+    clip = timeline[arrangement_index]
+    return clip, lambda: arrangement_clip_brief(clip, beats_per_bar(song), arrangement_index)
 
 
 def _note_fields(note, i):

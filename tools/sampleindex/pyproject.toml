@@ -1,0 +1,45 @@
+[project]
+name = "sampleindex"
+version = "0.1.0"
+description = "Offline sample library index for AbletonConnect: scan, analyze with librosa, search with SQLite"
+authors = [
+    { name = "owdez" }
+]
+license = "MIT"
+requires-python = ">=3.12"
+# The package itself is stdlib only, so the MCP server can depend on it for search without
+# pulling in librosa. Analysis needs the "analyze" group, which `uv run --project tools/sampleindex`
+# installs by default.
+dependencies = []
+
+[project.scripts]
+sampleindex = "sampleindex.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.13.5,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+analyze = [
+    "librosa>=0.11",
+    "numpy>=2.0",
+    "soundfile>=0.13",
+]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.17.2",
+]
+
+[tool.uv]
+default-groups = ["analyze", "dev"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]

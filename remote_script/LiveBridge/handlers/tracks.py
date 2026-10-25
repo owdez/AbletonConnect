@@ -1,11 +1,13 @@
-"""Track creation and the mixer."""
+"""Tracks (create, rename, arm, delete) and the mixer."""
 
 from ..dispatch import command
 from ..lom import (
     get_track,
     mixer_state,
+    own_return_index,
     require_int,
     require_number,
+    safe,
     set_param_value,
     track_brief,
     value_for_db,
@@ -41,6 +43,44 @@ def create_audio_track(ctx, index=-1, name=None):
 
 
 @command(undo=True)
+def set_track(ctx, track_index=None, track_type="track", name=None, arm=None):
+    song = ctx.song
+    track = get_track(song, track_index, track_type)
+    if name is None and arm is None:
+        raise BridgeError("bad_args", "Nothing to change. Pass name or arm.")
+    if name is not None:
+        if not isinstance(name, str) or not name.strip():
+            raise BridgeError("bad_args", "name must be non-empty text.")
+        track.name = name
+    if arm is not None:
+        if not safe(lambda: track.can_be_armed, False):
+            raise BridgeError("invalid_state", "'%s' can't be armed (only audio and MIDI tracks can)." % track.name)
+        track.arm = bool(arm)
+    return track_brief(track, track_index if track_type != "master" else None, track_type)
+
+
+@command(undo=True)
+def delete_track(ctx, track_index, track_type="track"):
+    song = ctx.song
+    if track_type == "master":
+        raise BridgeError("bad_args", "The master track can't be deleted.")
+    track = get_track(song, track_index, track_type)
+    name = track.name
+    if track_type == "return":
+        song.delete_return_track(track_index)
+        remaining = list(song.return_tracks)
+    else:
+        if len(song.tracks) == 1:
+            raise BridgeError("invalid_state", "Live needs at least one audio or MIDI track.")
+        song.delete_track(track_index)
+        remaining = list(song.tracks)
+    return {
+        "deleted": {"index": track_index, "type": track_type, "name": name},
+        "remaining": [{"index": i, "name": t.name} for i, t in enumerate(remaining)],
+    }
+
+
+@command(undo=True)
 def set_mixer(ctx, track_index=None, track_type="track", volume=None, volume_db=None, pan=None, sends=None, sends_db=None, mute=None, solo=None):
     song = ctx.song
     track = get_track(song, track_index, track_type)
@@ -60,6 +100,7 @@ def set_mixer(ctx, track_index=None, track_type="track", volume=None, volume_db=
         set_param_value(mixer.panning, require_number(pan, "pan"), "pan")
 
     send_params = list(mixer.sends)
+    own = own_return_index(track, song) if track_type == "return" else None
     for values, in_db in ((sends, False), (sends_db, True)):
         if values is None:
             continue
@@ -72,6 +113,8 @@ def set_mixer(ctx, track_index=None, track_type="track", volume=None, volume_db=
                 raise BridgeError("bad_args", "Send key %r isn't a return index." % (key,)) from None
             if not 0 <= i < len(send_params):
                 raise BridgeError("not_found", "No send %d on '%s'. It has %d send(s)." % (i, track.name, len(send_params)))
+            if i == own:
+                raise BridgeError("bad_args", "'%s' can't send to itself." % track.name)
             label = "send %d" % i
             if in_db:
                 send_params[i].value = value_for_db(send_params[i], require_number(value, label))
