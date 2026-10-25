@@ -35,7 +35,8 @@ read-only .als parser (tools/) that never talks to Live.
    and `arrange_scenes`, after a real song build hit those gaps. Then devices
    inside racks (`device_path`), Simpler's playback mode
    (`set_device_property`) and Live's own output meters (`get_meters`, an
-   interim step before Phase 3, not a replacement).
+   interim step before Phase 3, not a replacement), then clip envelopes
+   (`set_clip_envelope`), which `arrange_scenes` carries onto the timeline.
 2. **Sample library index.** Scan the sample folders and analyze each file
    with librosa (BPM, key, brightness, length, one-shot or loop type) into a
    local index, then add a search tool. This runs outside Live. Live's browser
@@ -55,7 +56,7 @@ remote_script/LiveBridge/   Remote Script, loaded by Live (Python 3.11, stdlib o
   server.py                 TCP server and connections (no Live imports)
   dispatch.py               @command registry, undo steps, multi-tick jobs
   lom.py                    LOM -> compact dict helpers, dB bisection
-  handlers/                 session, tracks (mixer), clips, scenes, arrangement, devices, meters, browser
+  handlers/                 session, tracks (mixer), clips, envelopes, scenes, arrangement, devices, meters, browser
 remote_script/tests/        pytest on Python 3.11 with a fake Live (fake_live.py)
 server/                     MCP server (uv project)
   src/abletonconnect/       client.py (bridge client), server.py (MCP tools)
@@ -227,6 +228,12 @@ That file is git-ignored; read it when it exists.
 - It does everything in one handler call, one tick, so it's one undo step.
   Don't turn it into a multi-tick generator: changes from different ticks
   become separate undo steps.
+- A MIDI clip with envelopes can't go through `create_midi_clip` (a timeline
+  clip can't be given envelopes). It's built in a spare Session slot (the
+  track's first empty slot, or a temporary scene that's deleted afterwards and
+  the selected scene restored), with notes and envelopes repeated to fill the
+  section, then copied with `duplicate_clip_to_arrangement` and the spare clip
+  deleted, all in the same tick.
 - `set_device_parameter` takes display text ("120 Hz", "1.2 kHz", "350 ms",
   "1/4"). Continuous parameters bisect `str_for_value` like the dB code;
   units are normalized (kHz -> Hz, s -> ms) so prefix changes don't break it.
@@ -238,6 +245,48 @@ That file is git-ignored; read it when it exists.
   nothing, so it's hidden and rejected.
 - Only automatable parameters appear in `device.parameters`. Drift's Voice
   Mode and mod matrix routing aren't there.
+
+## Clip envelopes (verified in Live 12.4.7)
+
+`handlers/envelopes.py`. What the API turned out to allow:
+
+- Session clips: `Clip.automation_envelope(param)` (None if there's none),
+  `create_automation_envelope(param)`, `clear_envelope`, `clear_all_envelopes`,
+  and `Clip.automation_envelopes` lists them (`env.parameter`). The param must
+  be on the clip's track. A new envelope has no events and follows the
+  parameter's own value.
+- `Live.Envelope.Envelope` has `create_event(EnvelopeEvent(time, raw value))`,
+  `events_in_range`, `delete_events_in_range`, `insert_step` and
+  `value_at_time`. Times are beats from the clip start, like notes.
+- Breakpoints are joined by straight lines in raw values, so ramps are exact.
+  `EnvelopeEventControlCoefficients` (curves) are accepted and ignored, so
+  curves are drawn as 16 straight pieces. Quantized parameters step.
+- Two events at one time make a vertical jump (holds use this). At a jump, and
+  at any event of a quantized parameter, `value_at_time(t)` returns the value
+  reached at t; the new value starts just after t.
+- **`events_in_range` reports values in Live's internal units**: linear gain for
+  volume and sends (raw 0.8 reads 0.794), Hz for Operator's filter, raw for pan
+  and most others. Always read values with `value_at_time`, which is raw.
+- `events_in_range` and `delete_events_in_range` are inclusive at both ends and
+  raise "Range out of bounds" past +-1576800 beats (Live's last beat).
+  `create_event` raises "Value out of bounds" outside min-max; `insert_step`
+  clamps, and a zero-length step does nothing.
+- Arrangement clips: `automation_envelope` returns None and
+  `create_automation_envelope` raises "Not a session clip or parameter belongs
+  to another track". There's no `Track.automation_envelope`: track automation
+  in the Arrangement isn't in the LOM at all.
+- `duplicate_clip_to_arrangement` carries a Session clip's envelopes, even ones
+  written in the same tick. On a track with no devices they stay in the
+  timeline clip (`has_envelopes`, editable through `automation_envelopes`) and
+  go when it's deleted. On a track with devices Live writes them as the
+  track's arrangement automation over the clip's span, with the parameter's own
+  value outside it; deleting the clip leaves that automation behind. Both play
+  back the same. A parameter's `automation_state` can read 2 (overridden) while
+  playback still follows the automation.
+- Undo: one `set_clip_envelope` call (clear, create, events) is one undo step.
+- Parameters inside racks take envelopes too (a Simpler inside the 909 Core
+  Kit's pad rack, by `device_path`). `env.parameter == param` matches LOM
+  parameters, which is how `get_clip_envelope` lists where each one lives.
 
 ## Racks, Simpler and meters (verified in Live 12.4.7)
 
