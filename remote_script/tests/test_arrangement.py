@@ -47,7 +47,7 @@ def test_sections_land_back_to_back_in_one_undo_step(d, scenes, live):
     riff = song.tracks[0].arrangement_clips[1]
     assert sorted(n.start_time for n in riff._notes) == [0, 6.5, 8]  # 3 bars of a 2-bar loop: the cut-off repeat drops its 2nd note
     # Audio: copied end to end; the 4-beat loop fills 3 bars exactly.
-    assert timeline(song, 1) == [("Kick 01.wav", 16, 20), ("Kick 01.wav", 20, 24), ("Kick 01.wav", 24, 28)]
+    assert timeline(song, 1) == [("Kick 01", 16, 20), ("Kick 01", 20, 24), ("Kick 01", 24, 28)]
     info = result(d, "get_track_info", track_index=0)
     assert info["arrangement"][1] == {"index": 1, "name": "Riff", "start_bar": 5, "end_bar": 8}
     assert result(d, "get_session_info")["tracks"][0]["arrangement_clips"] == 3

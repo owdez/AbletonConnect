@@ -344,7 +344,7 @@ def test_load_items(d, live):
     assert out["changed"] is True and out["devices"][-1]["name"] == "Reverb"
     assert song.view.selected_track is song.tracks[1]
     out = result(d, "load_browser_item", path="user_folders/Samples/Drums/Kick 03.wav", track_index=1, clip_slot_index=2)
-    assert out["clip"]["name"] == "Kick 03.wav" and out["clip"]["type"] == "audio"
+    assert out["clip"]["name"] == "Kick 03" and out["clip"]["type"] == "audio"
     assert "clip_slot_index" in failure(d, "load_browser_item", path="user_folders/Samples/Drums/Kick 04.wav", track_index=1)["message"]
     assert "can't be loaded" in failure(d, "load_browser_item", path="instruments", track_index=0)["message"]
     assert "already has clip" in failure(d, "load_browser_item", path="user_folders/Samples/Drums/Kick 05.wav", track_index=1, clip_slot_index=2)["message"]
@@ -355,3 +355,33 @@ def test_load_reports_no_change(d, live, monkeypatch):
     monkeypatch.setattr(app.browser, "load_item", lambda item: None)
     out = result(d, "load_browser_item", path="instruments/Drift", track_index=0)
     assert out["changed"] is False and "note" in out
+
+
+LOOP = "user_folders/Samples/Loops/Cymbal Loop.wav"
+
+
+def test_user_folder_sample_into_clip_slot_is_one_undo_step(d, live, tmp_path):
+    # Live's browser load would set the tempo of an empty set from this loop as a second undo step.
+    song, app = live
+    app.browser.mount_user_folder(str(tmp_path))
+    out = result(d, "load_browser_item", path=LOOP, track_index=1, clip_slot_index=0)
+    assert out["clip"]["name"] == "Cymbal Loop" and out["clip"]["file"] == str(tmp_path / "Samples" / "Loops" / "Cymbal Loop.wav")
+    assert "tempo" not in out and song.tempo == 120.0
+    assert song.undo_steps == 1 and song.undo_depth == 0 and app.browser.loaded == []
+    assert song.view.selected_track is song.tracks[1]
+    # A sample onto a MIDI track still goes through the browser (into Simpler).
+    out = result(d, "load_browser_item", path="user_folders/Samples/Drums/Kick 01.wav", track_index=0)
+    assert out["devices"][0]["name"] == "Simpler" and app.browser.loaded == ["Kick 01.wav"]
+    assert song.undo_steps == 2
+
+
+def test_loop_without_a_file_reports_lives_tempo_change(d, live):
+    # Live's library samples have no file path, so they go through the browser. So does a user
+    # folder on a drive that isn't mounted (the fake's default).
+    song, app = live
+    out = result(d, "load_browser_item", path="samples/80s Beat 90 bpm.wav", track_index=1, clip_slot_index=0)
+    assert out["clip"]["name"] == "80s Beat 90 bpm" and app.browser.loaded == ["80s Beat 90 bpm.wav"]
+    assert out["tempo"] == {"from": 120.0, "to": 90.0} and "undo twice" in out["note"]
+    assert song.undo_steps == 2
+    out = result(d, "load_browser_item", path=LOOP, track_index=1, clip_slot_index=1)
+    assert "tempo" not in out and app.browser.loaded[-1] == "Cymbal Loop.wav"

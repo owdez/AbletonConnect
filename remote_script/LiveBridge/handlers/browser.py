@@ -4,14 +4,22 @@ Items are addressed by path: a category key, then item names joined by "/"
 ("instruments/Operator", "user_folders/Samples/Kicks/kick 01.wav"). A "/" in
 a name is escaped as "\\/". Walking large folders runs as a multi-tick job so
 Live's UI never freezes.
+
+Undo (verified in Live 12.4.7): browser.load_item records its own undo steps
+and ignores begin/end_undo_step around it. When a looping sample is the first
+clip in the set, Live also sets the song tempo from it as a second undo step.
+So a sample from a user folder goes into an audio clip slot through
+ClipSlot.create_audio_clip instead. That gives the same clip in one step and
+leaves the tempo alone.
 """
 
 import collections
 import os
 import time
+import urllib.parse
 
 from ..dispatch import WAIT, command
-from ..lom import clip_summary, device_brief, get_clip_slot, get_track, require_int, require_number
+from ..lom import clip_summary, device_brief, get_clip_slot, get_track, require_int, require_number, rnd
 from ..protocol import BridgeError
 
 CATEGORIES = (
@@ -223,7 +231,11 @@ def search_browser(ctx, query, categories=None, max_results=30, max_depth=8, tim
 
 @command()
 def load_browser_item(ctx, path, track_index=None, track_type="track", clip_slot_index=None):
-    """Select the track (and clip slot), load the item, and wait for Live to show the result."""
+    """Select the track (and clip slot), load the item, and wait for Live to show the result.
+
+    A sample from a user folder going into an audio clip slot is created from its file, in one
+    undo step (see the module docstring).
+    """
     song = ctx.song
     browser = ctx.browser
     track = get_track(song, track_index, track_type)
@@ -242,11 +254,16 @@ def load_browser_item(ctx, path, track_index=None, track_type="track", clip_slot
         raise BridgeError("bad_args", "Pass clip_slot_index to load a sample onto audio track '%s' as a clip." % track.name)
 
     before = _snapshot(track, slot)
+    tempo = song.tempo
     song.view.selected_track = track
     if slot is not None:
         song.view.highlighted_clip_slot = slot
-    with ctx.undo_step():
-        browser.load_item(item)
+    file_path = _sample_file(browser, parts) if is_sample and slot is not None and not track.has_midi_input else None
+    if file_path:
+        with ctx.undo_step():
+            slot.create_audio_clip(file_path)
+    else:
+        browser.load_item(item)  # records its own undo step
 
     changed = False
     for _ in range(LOAD_WAIT_TICKS):
@@ -266,7 +283,26 @@ def load_browser_item(ctx, path, track_index=None, track_type="track", clip_slot
         out["clip"] = clip_summary(slot.clip, clip_slot_index, notes=False)
     if not changed:
         out["note"] = "Live hasn't shown a change yet. Plugins can take a few seconds; check get_track_info."
+    if song.tempo != tempo:
+        out["tempo"] = {"from": rnd(tempo, 3), "to": rnd(song.tempo, 3)}
+        out["note"] = "Live set the tempo from this loop because it's the first clip in the set. That's a second undo step: undo twice to remove the clip."
     return out
+
+
+def _sample_file(browser, parts):
+    """The file behind a sample in a user folder, or None.
+
+    The folder's uri holds its location ("userfolder:/Volumes/HD/Samples"). Samples in Live's
+    library have no file path (their uri is "query:Samples#FileId_507").
+    """
+    if parts[0] != "user_folders" or len(parts) < 3:
+        return None
+    folder = next((f for f in _category(browser, "user_folders").children if f.name == parts[1]), None)
+    uri = str(getattr(folder, "uri", ""))
+    if not uri.startswith("userfolder:"):
+        return None
+    path = os.path.join(urllib.parse.unquote(uri[len("userfolder:") :].split("#", 1)[0]), *parts[2:])
+    return path if os.path.isfile(path) else None
 
 
 def _snapshot(track, slot):
