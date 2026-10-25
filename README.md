@@ -15,7 +15,7 @@ no telemetry and no outbound network traffic.
 
 ## What Claude can do
 
-30 tools, each returning compact JSON with the state after the change:
+32 tools, each returning compact JSON with the state after the change:
 
 | Area | Tools |
 |---|---|
@@ -24,7 +24,8 @@ no telemetry and no outbound network traffic.
 | Clips & notes | `create_clip`, `add_notes`, `get_clip_notes`, `fire_clip`, `stop_clip`, `set_clip` (rename), `delete_clip` (Session or timeline) |
 | Scenes & Arrangement | `create_scene`, `set_scene` (name), `delete_scene`, `fire_scene`, `arrange_scenes` (lay scenes out on the timeline as song sections) |
 | Transport | `start_playback`, `stop_playback` |
-| Sound design | `get_device_parameters`, `set_device_parameter` (by index or name; what Live displays, like `"120 Hz"`, `"350 ms"` or `"1/4"`, or raw or normalized values) |
+| Sound design | `get_device_parameters`, `set_device_parameter` (by index or name; what Live displays, like `"120 Hz"`, `"350 ms"` or `"1/4"`, or raw or normalized values), `set_device_property` (Simpler's playback mode: Classic, One-Shot, Slicing). Devices inside Instrument, Effect and Drum Racks are reached with a `device_path`; `get_track_info` lists every rack's chains and the path of each device in them |
+| Metering | `get_meters` (peak and average level per track, return and master in dBFS, from Live's own meters while the set plays) |
 | Browser | `browse_browser`, `search_browser`, `load_browser_item` (devices, plugins, presets, samples, user folders) |
 | Sample library | `search_samples` (your sample folders by name, loop or one-shot, BPM, key, root note, brightness and length; instant, from a local index) |
 
@@ -197,7 +198,9 @@ and the MCP server read it; Live needs a restart to pick up a port change:
 - No input, output or sidechain routing yet.
 - Only parameters Live exposes for automation can be set. Some device
   settings, like Drift's Voice Mode, have no parameter.
-- Devices inside rack chains aren't addressable yet; rack macros are.
+- `get_meters` reads Live's peak meters. It isn't RMS or LUFS; the Phase 3
+  analyzer plugin will measure those.
+- Rack chains' own volume, pan and sends can't be set yet.
 - Browser search walks Live's browser by name and stops after ~15 s on huge
   folders. Use `search_samples` for sample folders.
 - The sample index needs a manual rescan after you add samples.

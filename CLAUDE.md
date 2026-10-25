@@ -32,7 +32,10 @@ read-only .als parser (tools/) that never talks to Live.
    browser and undo. (FastMCP is called `MCPServer` in mcp 2.x:
    `from mcp.server.mcpserver import MCPServer`.) Since extended with
    scenes, track rename/arm/delete, song scale, display-value parameters
-   and `arrange_scenes`, after a real song build hit those gaps.
+   and `arrange_scenes`, after a real song build hit those gaps. Then devices
+   inside racks (`device_path`), Simpler's playback mode
+   (`set_device_property`) and Live's own output meters (`get_meters`, an
+   interim step before Phase 3, not a replacement).
 2. **Sample library index.** Scan the sample folders and analyze each file
    with librosa (BPM, key, brightness, length, one-shot or loop type) into a
    local index, then add a search tool. This runs outside Live. Live's browser
@@ -52,7 +55,7 @@ remote_script/LiveBridge/   Remote Script, loaded by Live (Python 3.11, stdlib o
   server.py                 TCP server and connections (no Live imports)
   dispatch.py               @command registry, undo steps, multi-tick jobs
   lom.py                    LOM -> compact dict helpers, dB bisection
-  handlers/                 session, tracks (mixer), clips, scenes, arrangement, devices, browser
+  handlers/                 session, tracks (mixer), clips, scenes, arrangement, devices, meters, browser
 remote_script/tests/        pytest on Python 3.11 with a fake Live (fake_live.py)
 server/                     MCP server (uv project)
   src/abletonconnect/       client.py (bridge client), server.py (MCP tools)
@@ -235,6 +238,40 @@ That file is git-ignored; read it when it exists.
   nothing, so it's hidden and rejected.
 - Only automatable parameters appear in `device.parameters`. Drift's Voice
   Mode and mod matrix routing aren't there.
+
+## Racks, Simpler and meters (verified in Live 12.4.7)
+
+- Racks have `can_have_chains`; `device.chains[i].devices[j]` reaches the
+  devices inside, nested racks included. A `device_path` alternates device
+  and chain indices: `[2, 0, 1]` is track device 2, chain 0, device 1.
+  Drum Rack pads are its `chains`, and each has `in_note` (36 = C1). Core
+  Library kits wrap each pad's Simpler in an Instrument Rack, so the 909
+  Mid Tom's Simpler is `[0, 8, 0, 0, 0]`. `lom.device_brief` lists chains
+  and each nested device's path (64 chains per rack, 4 rack levels).
+- Simpler (`class_name` "OriginalSimpler", Python type `SimplerDevice`):
+  `playback_mode` is a plain int property (0 Classic, 1 One-Shot,
+  2 Slicing), and so is `slicing_playback_mode` (0 Mono, 1 Poly, 2 Thru).
+  Setting one inside an undo step is one undo step. Switching modes doesn't
+  change or disable any parameter, so nothing warns that One-Shot ignores
+  the volume envelope: with Ve Attack at 20 s a 909 tom peaked at -29 dB in
+  Classic and -2.7 dB in One-Shot. `retrigger` and `voices` are properties
+  too but not exposed. Add properties in `lom.DEVICE_PROPERTIES`.
+- `Track.output_meter_left/right/level` are **linear in dB**, not
+  amplitude: reading = (dBFS + 70) / 76, so 0 is -70 dBFS or quieter,
+  0.921 is 0 dBFS and 1 is +6 dBFS (`lom.meter_db`). Measured with sines of
+  known level on audio tracks; returns and the master use the same scale.
+  They're post-fader.
+- left/right fall about 75 dB/s after a peak, so one reading per tick can
+  miss ~7 dB of a drum hit. `output_meter_level` holds the highest peak
+  for 2.0 s and then falls just as fast, so it catches every hit but also
+  carries peaks from before the window. `get_meters` therefore counts
+  left/right only after 1 s and held peaks only after 2.3 s and only when
+  they aren't falling, which makes the shortest window 2.5 s.
+- A muted track's meter keeps showing its level (the 909 kit read the same
+  -22.9 dB peak after `mute`), so the meters read before the mute.
+  `get_meters` reports the level and adds `"mute": true`.
+- MIDI tracks with no instrument have `has_audio_output` False; their
+  meters read 0.
 
 ## Conventions
 

@@ -1,10 +1,9 @@
 """Session overview, transport, tempo and undo."""
 
 from ..dispatch import WAIT, command
-from ..lom import find_track_index, get_track, require_number, rnd, safe, track_brief, track_detail
+from ..lom import NOTE_NAMES, find_track_index, get_track, require_number, rnd, safe, track_brief, track_detail
 from ..protocol import BridgeError
 
-NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 _FLATS = {"Db": 1, "Eb": 3, "Gb": 6, "Ab": 8, "Bb": 10}
 
 

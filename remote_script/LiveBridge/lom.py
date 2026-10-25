@@ -85,6 +85,39 @@ def get_device(track, device_index):
     return devices[device_index]
 
 
+def resolve_device(track, device_index=None, device_path=None):
+    """A device by top-level index, or anywhere inside racks by path.
+
+    A path alternates device and chain indices: [2] is track.devices[2], and
+    [2, 0, 1] is track.devices[2].chains[0].devices[1]. Drum Rack pads are chains
+    too. Returns (device, path); path is None for a top-level device_index.
+    """
+    if device_path is None:
+        return get_device(track, 0 if device_index is None else device_index), None
+    if device_index is not None:
+        raise BridgeError("bad_args", "Pass device_index or device_path, not both.")
+    if not isinstance(device_path, list) or len(device_path) % 2 == 0:
+        raise BridgeError("bad_args", "device_path alternates device and chain indices and has an odd length, like [2] or [2, 0, 1]. Got %r." % (device_path,))
+    for step in device_path:
+        require_int(step, "each device_path entry")
+    device = get_device(track, device_path[0])
+    for depth in range(1, len(device_path), 2):
+        chain_index, index = device_path[depth], device_path[depth + 1]
+        if not safe(lambda: device.can_have_chains, False):
+            raise BridgeError("not_found", "'%s' at device_path %s isn't a rack, so it has no chains." % (device.name, device_path[:depth]))
+        chains = list(device.chains)
+        if not 0 <= chain_index < len(chains):
+            names = ", ".join("%d %s" % (i, c.name) for i, c in enumerate(chains)) or "none"
+            raise BridgeError("not_found", "Rack '%s' has no chain %d. Chains: %s." % (device.name, chain_index, names))
+        chain = chains[chain_index]
+        devices = list(chain.devices)
+        if not 0 <= index < len(devices):
+            names = ", ".join("%d %s" % (i, d.name) for i, d in enumerate(devices)) or "none"
+            raise BridgeError("not_found", "Chain '%s' in '%s' has no device %d. Devices: %s." % (chain.name, device.name, index, names))
+        device = devices[index]
+    return device, list(device_path)
+
+
 def _count_phrase(n, label):
     if n == 0:
         return "no %ss" % label
@@ -137,6 +170,17 @@ def track_brief(track, index, track_type="track"):
         if timeline:
             out["arrangement_clips"] = timeline
     return out
+
+
+def meter_db(value):
+    """A track meter reading (Track.output_meter_*) in dBFS.
+
+    The meters are linear in dB, not amplitude: 0 is -70 dBFS (or quieter), 1 is +6 dBFS,
+    and 0 dBFS reads 0.921. Measured in Live 12.4.7 with sines of known level.
+    """
+    if value <= 0.0:
+        return float("-inf")
+    return value * 76.0 - 70.0
 
 
 def own_return_index(track, song):
@@ -253,7 +297,35 @@ def clip_summary(clip, slot_index, notes=True):
 # ---- devices and parameters ---------------------------------------------------------------------
 
 
+CHAIN_LIMIT = 64  # chains listed per rack; a Drum Rack can fill all 128 pads
+RACK_DEPTH = 4  # racks inside racks are listed this many levels deep
+
+# Device settings Live keeps as properties instead of automatable parameters, by device
+# class. Each maps to its options; the property's value is the option's index. The first
+# property of a class is also shown in device overviews.
+DEVICE_PROPERTIES = {
+    "OriginalSimpler": {
+        "playback_mode": ("Classic", "One-Shot", "Slicing"),
+        "slicing_playback_mode": ("Mono", "Poly", "Thru"),
+    },
+}
+
+
+def device_properties(device, headline_only=False):
+    """{"playback_mode": "One-Shot"} for devices listed in DEVICE_PROPERTIES, else {}."""
+    out = {}
+    for name, options in DEVICE_PROPERTIES.get(safe(lambda: device.class_name), {}).items():
+        value = safe(lambda: getattr(device, name))
+        if isinstance(value, int) and 0 <= value < len(options):
+            out[name] = options[value]
+        if headline_only:
+            break
+    return out
+
+
 def device_brief(device, index):
+    """A top-level device. Racks list their chains and the devices inside them, each
+    with the device_path that get_device_parameters and set_device_parameter take."""
     out = {
         "index": index,
         "name": device.name,
@@ -262,9 +334,48 @@ def device_brief(device, index):
         "active": bool(safe(lambda: device.is_active, True)),
         "parameters": len(device.parameters),
     }
-    if safe(lambda: device.can_have_chains, False):
-        out["chains"] = len(safe(lambda: device.chains, ()))
+    out.update(device_properties(device, headline_only=True))
+    _add_chains(out, device, [index], 1)
     return out
+
+
+def nested_device_brief(device, path, depth=1):
+    out = {"path": list(path), "name": device.name, "class": device.class_name}
+    if not safe(lambda: device.is_active, True):
+        out["active"] = False
+    out.update(device_properties(device, headline_only=True))
+    _add_chains(out, device, path, depth + 1)
+    return out
+
+
+def _add_chains(out, device, path, depth):
+    if not safe(lambda: device.can_have_chains, False):
+        return
+    chains = list(safe(lambda: device.chains, ()) or ())
+    if depth > RACK_DEPTH or not chains:
+        out["chain_count"] = len(chains)
+        return
+    listed = []
+    for c, chain in enumerate(chains[:CHAIN_LIMIT]):
+        entry = {"index": c, "name": chain.name}
+        note = safe(lambda: chain.in_note)  # Drum Rack pads; -1 means "All Notes"
+        if isinstance(note, int) and 0 <= note <= 127:
+            entry["note"] = note_name(note)
+        if safe(lambda: chain.mute, False):
+            entry["mute"] = True
+        entry["devices"] = [nested_device_brief(d, path + [c, i], depth) for i, d in enumerate(chain.devices)]
+        listed.append(entry)
+    out["chains"] = listed
+    if len(chains) > CHAIN_LIMIT:
+        out["chain_count"] = len(chains)
+
+
+NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+
+def note_name(pitch):
+    """Live's octave numbering: 60 is C3, 36 is C1."""
+    return "%s%d" % (NOTE_NAMES[pitch % 12], pitch // 12 - 2)
 
 
 def param_display(param, value=None):

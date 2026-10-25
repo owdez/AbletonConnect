@@ -95,6 +95,71 @@ class FakeDevice:
         self.parameters = parameters if parameters is not None else [FakeParam("Device On", 1.0, 0.0, 1.0, quantized=True, items=("Off", "On"))]
 
 
+class FakeChain:
+    def __init__(self, name, devices=(), in_note=None):
+        self.name = name
+        self.devices = list(devices)
+        self.mute = False
+        if in_note is not None:  # Drum Rack pads (DrumChain); -1 is "All Notes"
+            self.in_note = in_note
+
+
+class FakeRack(FakeDevice):
+    def __init__(self, name, chains, class_name="InstrumentGroupDevice", type_="instrument"):
+        macros = [FakeParam("Macro %d" % (i + 1), 0.0, 0.0, 127.0) for i in range(8)]
+        super().__init__(name, class_name, type_, [FakeParam("Device On", 1.0, 0.0, 1.0, quantized=True, items=("Off", "On"))] + macros)
+        self.can_have_chains = True
+        self.chains = list(chains)
+
+
+class FakeSimpler(FakeDevice):
+    """Simpler's playback mode is a property (0 Classic, 1 One-Shot, 2 Slicing), not a parameter."""
+
+    def __init__(self, name="Simpler"):
+        super().__init__(
+            name,
+            "OriginalSimpler",
+            parameters=[
+                FakeParam("Device On", 1.0, 0.0, 1.0, quantized=True, items=("Off", "On")),
+                FakeParam("Ve Decay", 0.5, 0.0, 1.0, display=time_display),
+                FakeParam("Pe < Env", 0.0, -48.0, 48.0),
+            ],
+        )
+        self._playback_mode = 0
+        self._slicing_playback_mode = 0
+
+    @property
+    def playback_mode(self):
+        return self._playback_mode
+
+    @playback_mode.setter
+    def playback_mode(self, value):
+        if value not in (0, 1, 2):
+            raise RuntimeError("Invalid playback mode")
+        self._playback_mode = value
+
+    @property
+    def slicing_playback_mode(self):
+        return self._slicing_playback_mode
+
+    @slicing_playback_mode.setter
+    def slicing_playback_mode(self, value):
+        if value not in (0, 1, 2):
+            raise RuntimeError("Invalid slicing playback mode")
+        self._slicing_playback_mode = value
+
+
+def make_instrument_rack():
+    """An 'Arp'-style preset: a rack whose chain holds a MIDI effect, a synth and an effect rack."""
+    fx = FakeRack("Space", [FakeChain("Wet", [FakeDevice("Reverb", type_="audio_effect")])], class_name="AudioEffectGroupDevice", type_="audio_effect")
+    return FakeRack("Arp", [FakeChain("Lead", [FakeDevice("Arpeggiator", type_="midi_effect"), make_operator(), fx]), FakeChain("Sub")])
+
+
+def make_drum_rack():
+    pads = [FakeChain("Kick", [FakeSimpler("Kick")], in_note=36), FakeChain("Tom", [FakeSimpler("Tom")], in_note=45)]
+    return FakeRack("Kit", pads, class_name="DrumGroupDevice")
+
+
 def freq_display(v):
     # Like Live's filter frequency: exponential 20 Hz-20 kHz, switching to kHz at 1000.
     hz = 20 * 1000**v
@@ -264,6 +329,15 @@ class FakeTrack:
         self.input_routing_type = Routing("All Ins")
         self.output_routing_type = Routing("Master")
         self.arrangement_clips = []
+        # Live's meters: momentary peaks per channel, and the larger one held for ~1 s.
+        self.output_meter_left = 0.0
+        self.output_meter_right = 0.0
+        self.output_meter_level = 0.0
+
+    @property
+    def has_audio_output(self):
+        # A MIDI track only outputs audio once it has an instrument.
+        return self.kind != "midi" or any(str(d.type) == "instrument" for d in self.devices)
 
     @property
     def mute(self):
