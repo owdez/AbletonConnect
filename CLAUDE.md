@@ -141,6 +141,16 @@ That file is git-ignored; read it when it exists.
   `RemoteScriptMessage: (LiveBridge) LiveBridge: ...`.
 - Clip stops are quantized: right after `stop_clip`, the clip still reports
   playing until the next bar.
+- **Undo steps.** A script's `begin_undo_step()` ... `end_undo_step()` groups
+  only the changes it makes within one tick. Holding a step open across ticks
+  doesn't merge changes from different ticks. `browser.load_item` is
+  synchronous but records its own undo step and ignores any step the script
+  has open. When the loaded sample is the first clip in the set and a loop,
+  Live also sets the song tempo from it, inside the same call, as a second
+  step. `ClipSlot.create_audio_clip(path)` makes the same clip (name, warp,
+  loop, gain, track rename) in one step and leaves the tempo alone. Library
+  samples have no file path: their uri is `query:Samples#FileId_N`. User
+  folder items carry it: `userfolder:/Volumes/...#Sub:file.wav`.
 - With a copy install (`scripts/install.sh --copy`), rerun it after every
   change under `remote_script/`, then restart Live.
 

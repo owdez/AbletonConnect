@@ -334,7 +334,11 @@ async def load_browser_item(
 ) -> str:
     """Load a device, plugin, preset, or sample onto a track, like double-clicking it in Live's
     browser. This selects the track in Live. Instruments and effects go on the device chain; a sample
-    on a MIDI track loads into Simpler. Returns the track's device chain afterwards."""
+    on a MIDI track loads into Simpler. Returns the track's device chain afterwards.
+
+    A sample from a user folder going into an audio clip slot never changes the tempo. A loop from
+    Live's own library that is the first clip in the set makes Live set the tempo from it; the
+    result then shows `tempo`, and removing the load takes two undos."""
     args = _track(track_index, track_type)
     args.update(path=path, clip_slot_index=clip_slot_index)
     return await call("load_browser_item", args, mutating=True, timeout=20)

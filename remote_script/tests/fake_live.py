@@ -6,8 +6,10 @@ Live's habit of raising RuntimeError for invalid operations.
 """
 
 import math
+import os
 import sys
 import types
+import urllib.parse
 
 # ---- parameters ---------------------------------------------------------------------------------
 
@@ -180,6 +182,16 @@ class FakeClipSlot:
             raise RuntimeError("Clip slot is not empty")
         self.clip = FakeClip(length)
 
+    def create_audio_clip(self, path):
+        if self._track.has_midi_input:
+            raise RuntimeError("Can only create audio clips on audio tracks")
+        if self.clip is not None:
+            raise RuntimeError("Clip slot is not empty")
+        if not os.path.isfile(path):
+            raise RuntimeError("Invalid file path")
+        self.clip = FakeClip(4.0, midi=False, name=os.path.splitext(os.path.basename(path))[0])
+        self.clip.file_path = path
+
     def fire(self):
         self.is_triggered = True
         if self.clip is not None:
@@ -321,14 +333,17 @@ class FakeSong:
 
 
 class FakeBrowserItem:
-    def __init__(self, name, children=(), loadable=False, device=False, folder=None, factory=None):
+    """`tempo`: a loop whose tempo Live adopts when it's the first clip in the set."""
+
+    def __init__(self, name, children=(), loadable=False, device=False, folder=None, factory=None, tempo=None, uri=None):
         self.name = name
-        self.uri = "query:" + name
+        self.uri = uri or "query:" + name
         self._children = list(children)
         self.is_loadable = loadable
         self.is_device = device
         self.is_folder = bool(children) and not device if folder is None else folder
         self.factory = factory
+        self.tempo = tempo
 
     @property
     def children(self):
@@ -356,20 +371,48 @@ class FakeBrowser:
         self.plugins = FakeBrowserItem("Plugins", [FakeBrowserItem("VST3", [FakeBrowserItem("Serum 2", loadable=True, device=True)], folder=True)], folder=True)
         self.user_library = FakeBrowserItem("User Library", [FakeBrowserItem("Presets", [FakeBrowserItem("Lo/Fi Keys.adg", loadable=True)], folder=True)], folder=True)
         drums = [FakeBrowserItem("Kick %02d.wav" % i, loadable=True) for i in range(250)]
-        self.user_folders = (FakeBrowserItem("Samples", [FakeBrowserItem("Drums", drums, folder=True)], folder=True),)
+        loops = [FakeBrowserItem("Cymbal Loop.wav", loadable=True, tempo=92.675)]
+        # The uri points at a folder that doesn't exist (an unmounted drive) until mount_user_folder().
+        samples = FakeBrowserItem("Samples", [FakeBrowserItem("Drums", drums, folder=True), FakeBrowserItem("Loops", loops, folder=True)], folder=True, uri="userfolder:/Volumes/Not%20Mounted/Samples")
+        self.user_folders = (samples,)
+        self.samples = FakeBrowserItem("Samples", [FakeBrowserItem("80s Beat 90 bpm.wav", loadable=True, tempo=90.0, uri="query:Samples#FileId_3983")], folder=True)
         self.sounds = FakeBrowserItem("Sounds", [], folder=True)
         self.hotswap_target = None
         self.loaded = []
 
+    def mount_user_folder(self, root):
+        """Write every sample in the user folder under `root` and point the folder's uri there."""
+        folder = self.user_folders[0]
+        folder.uri = "userfolder:" + urllib.parse.quote(os.path.join(root, folder.name))
+
+        def write(item, path):
+            for child in item.children:
+                if child.is_folder:
+                    write(child, os.path.join(path, child.name))
+                else:
+                    os.makedirs(path, exist_ok=True)
+                    with open(os.path.join(path, child.name), "wb") as f:
+                        f.write(b"RIFF")
+
+        write(folder, os.path.join(root, folder.name))
+
     def load_item(self, item):
+        # Like Live 12.4.7: the load is an undo step of its own, whatever undo step the script has
+        # open, and the first loop in a set also sets the tempo as a second step.
         self.loaded.append(item.name)
-        track = self._song.view.selected_track
+        song = self._song
+        song.undo_steps += 1
+        track = song.view.selected_track
         if item.name.lower().endswith(".wav"):
-            slot = self._song.view.highlighted_clip_slot
+            slot = song.view.highlighted_clip_slot
             if track.has_midi_input:
                 track.devices.append(FakeDevice("Simpler"))
             elif slot is not None:
-                slot.clip = FakeClip(4.0, midi=False, name=item.name)
+                first = not any(s.has_clip for t in song.tracks for s in t.clip_slots)
+                slot.clip = FakeClip(4.0, midi=False, name=os.path.splitext(item.name)[0])
+                if first and item.tempo:
+                    song._tempo = item.tempo
+                    song.undo_steps += 1
             return
         if item.factory:
             track.devices.append(item.factory())
