@@ -5,6 +5,7 @@ description = "MCP server that lets Claude work inside Ableton Live via the Live
 authors = [
     { name = "owdez" }
 ]
+license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
     "mcp>=2.3",

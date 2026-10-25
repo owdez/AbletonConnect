@@ -165,5 +165,9 @@ reproduction of Live's GIL behaviour.
 the quirks of Live's embedded Python that shaped the design (GIL starvation of
 background threads, `schedule_message` re-entrancy, macOS socket behaviour).
 
+## License
+
+[MIT](LICENSE)
+
 Ableton and Ableton Live are trademarks of Ableton AG. This project is
 independent and unofficial.
