@@ -15,14 +15,15 @@ no telemetry and no outbound network traffic.
 
 ## What Claude can do
 
-32 tools, each returning compact JSON with the state after the change:
+35 tools, each returning compact JSON with the state after the change:
 
 | Area | Tools |
 |---|---|
 | Session | `get_session_info`, `get_track_info`, `set_tempo`, `set_scale`, `undo` |
 | Tracks & mixer | `create_midi_track`, `create_audio_track`, `set_track` (rename, arm), `delete_track`, `set_mixer` (volume raw or dB, pan, sends, mute, solo) |
 | Clips & notes | `create_clip`, `add_notes`, `get_clip_notes`, `fire_clip`, `stop_clip`, `set_clip` (rename), `delete_clip` (Session or timeline) |
-| Scenes & Arrangement | `create_scene`, `set_scene` (name), `delete_scene`, `fire_scene`, `arrange_scenes` (lay scenes out on the timeline as song sections) |
+| Automation | `set_clip_envelope` (a ramp, curve or breakpoints inside a Session clip for volume, pan, sends or any device parameter, racks included, in what Live displays, like `"200 Hz"` to `"8 kHz"`), `get_clip_envelope`, `clear_clip_envelope` |
+| Scenes & Arrangement | `create_scene`, `set_scene` (name), `delete_scene`, `fire_scene`, `arrange_scenes` (lay scenes out on the timeline as song sections, clip envelopes included) |
 | Transport | `start_playback`, `stop_playback` |
 | Sound design | `get_device_parameters`, `set_device_parameter` (by index or name; what Live displays, like `"120 Hz"`, `"350 ms"` or `"1/4"`, or raw or normalized values), `set_device_property` (Simpler's playback mode: Classic, One-Shot, Slicing). Devices inside Instrument, Effect and Drum Racks are reached with a `device_path`; `get_track_info` lists every rack's chains and the path of each device in them |
 | Metering | `get_meters` (peak and average level per track, return and master in dBFS, from Live's own meters while the set plays) |
@@ -109,6 +110,7 @@ Open Live, start a new Claude Code session, and ask in plain language:
 - "Find a dark 808 in F and load it on a new MIDI track."
 - "I need a 90 BPM break, something brighter than the last one."
 - "Drums to -6 dB, hats 20% right, keys to the reverb return at -12 dB."
+- "In the build clip, sweep the bass filter from 200 Hz to 8 kHz over 8 bars, slow at first, and ride the reverb send up to 0 dB in the last 2."
 - "Name the scenes Intro, Build, Drop and Outro, then lay them out as 32 bars each on the timeline."
 - "Undo that."
 
@@ -192,8 +194,13 @@ and the MCP server read it; Live needs a restart to pick up a port change:
 ## Limitations
 
 - The Arrangement can be filled from scenes (`arrange_scenes`), and timeline
-  clips can be renamed or deleted, but not moved or edited. No automation or
-  clip envelopes yet.
+  clips can be renamed or deleted, but not moved or edited.
+- Automation goes into Session clip envelopes, and `arrange_scenes` carries it
+  onto the timeline. Live's API has no access to track automation in the
+  Arrangement, and timeline clips can't be given new envelopes, so automation
+  can't be drawn or erased on the timeline directly. On tracks with devices,
+  Live turns carried envelopes into track automation, which stays when those
+  timeline clips are deleted; undo the layout instead.
 - Tracks, scenes and clips can be deleted; devices can't yet.
 - No input, output or sidechain routing yet.
 - Only parameters Live exposes for automation can be set. Some device

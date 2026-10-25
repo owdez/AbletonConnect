@@ -66,11 +66,19 @@ def pan_display(v):
     return "%d%s" % (round(abs(v) * 50), "L" if v < 0 else "R")
 
 
+def fader_gain(v):
+    """What Live's envelope events report for a fader: linear gain, not the raw 0-1 value."""
+    db = volume_display(v).split()[0]
+    return 10 ** (float(db) / 20) if db != "-inf" else 0.0003162
+
+
 class FakeMixer:
     def __init__(self, n_sends=0):
         self.volume = FakeParam("Track Volume", 0.85, 0.0, 1.0, display=volume_display)
         self.panning = FakeParam("Track Panning", 0.0, -1.0, 1.0, display=pan_display)
         self.sends = [FakeParam("%s-Send" % chr(65 + i), 0.0, 0.0, 1.0, display=volume_display) for i in range(n_sends)]
+        for fader in [self.volume] + self.sends:
+            fader.internal = fader_gain
 
 
 # ---- devices ------------------------------------------------------------------------------------
@@ -212,9 +220,155 @@ class FakeNote:
         self.note_id = note_id
 
 
-class FakeClip:
-    def __init__(self, length, midi=True, name="", start_time=0.0):
+# ---- clip envelopes -----------------------------------------------------------------------------
+
+
+class EnvelopeEventControlCoefficients:
+    def __init__(self, x1=0.5, y1=0.5, x2=0.5, y2=0.5):
+        self.x1, self.y1, self.x2, self.y2 = x1, y1, x2, y2
+
+
+class EnvelopeEvent:
+    """Live.Envelope.EnvelopeEvent: a breakpoint."""
+
+    def __init__(self, time, value, control_coefficients=None):
+        self.time = float(time)
+        self.value = float(value)
+        self.control_coefficients = control_coefficients or EnvelopeEventControlCoefficients()
+
+
+ENVELOPE_LIMIT = 1576800.0
+
+
+class FakeEnvelope:
+    """Live 12.4.7's Envelope, as measured in Live:
+    - straight lines between breakpoints in raw values; quantized parameters step;
+    - two events at one time are a jump: value_at_time at that time gives the first, after it the last;
+    - the first value holds before the first event and the last after the last; with no events
+      the envelope follows the parameter's own value;
+    - events_in_range is inclusive and refuses ranges past +-1576800, and its event values are
+      Live's internal units (linear gain for volume and sends), not raw values;
+    - curve coefficients are ignored; create_event refuses values outside min-max, insert_step clamps.
+    """
+
+    def __init__(self, parameter, events=()):
+        self.parameter = parameter
+        self._events = list(events)  # (time, raw value), in insertion order within a time
+
+    def _add(self, time, value):
+        at = len([t for t, _ in self._events if t <= time])
+        self._events.insert(at, (float(time), float(value)))
+
+    def _delete(self, start, end):
+        self._events = [(t, v) for t, v in self._events if not start <= t <= end]
+
+    @staticmethod
+    def _range(start, end):
+        if start > end:
+            raise ValueError("Inverted ranges are not supported.")
+        if start < -ENVELOPE_LIMIT or end > ENVELOPE_LIMIT:
+            raise ValueError("Range out of bounds.")
+
+    def create_event(self, event):
+        if not self.parameter.min - 1e-6 <= event.value <= self.parameter.max + 1e-6:
+            raise ValueError("Value out of bounds.")
+        self._add(event.time, event.value)
+
+    def events_in_range(self, start, end):
+        self._range(start, end)
+        internal = getattr(self.parameter, "internal", None) or (lambda v: v)
+        return tuple(EnvelopeEvent(t, internal(v)) for t, v in self._events if start <= t <= end)
+
+    def delete_events_in_range(self, start, end):
+        self._range(start, end)
+        self._delete(start, end)
+
+    def insert_step(self, time, duration, value):
+        value = min(max(value, self.parameter.min), self.parameter.max)
+        before, after = self.value_at_time(time), self.value_at_time(time + duration + 1e-9)
+        self._delete(time, time + duration)
+        for t, v in ((time, before), (time, value), (time + duration, value), (time + duration, after)):
+            self._add(t, v)
+
+    def value_at_time(self, time):
+        """At a jump Live returns the value reached at that time; the new one starts just after."""
+        events = self._events
+        if not events:
+            return self.parameter.value
+        before = [e for e in events if e[0] < time]
+        after = [e for e in events if e[0] >= time]
+        if not before or not after:
+            return (after or before)[0 if after else -1][1]
+        (t0, v0), (t1, v1) = before[-1], after[0]
+        if self.parameter.is_quantized:  # holds, and still reports the old value at the event itself
+            return v0
+        if t1 == time:
+            return v1
+        return v0 + (v1 - v0) * (time - t0) / (t1 - t0)
+
+
+class OldFakeEnvelope(FakeEnvelope):
+    """Before Live 12: only insert_step and value_at_time."""
+
+    def __getattribute__(self, name):
+        if name in ("create_event", "events_in_range", "delete_events_in_range"):
+            raise AttributeError(name)
+        return object.__getattribute__(self, name)
+
+
+def _track_params(track):
+    mixer = track.mixer_device
+    params = [mixer.volume, mixer.panning] + list(mixer.sends)
+    devices = list(track.devices)
+    while devices:  # racks included
+        device = devices.pop()
+        params.extend(device.parameters)
+        for chain in device.chains:
+            devices.extend(chain.devices)
+    return params
+
+
+class FakeClipEnvelopes:
+    """The envelope half of Clip. Arrangement clips can't get envelopes (automation_envelope is None,
+    create_automation_envelope raises), but keep the ones a duplicated Session clip brought along."""
+
+    envelope_class = FakeEnvelope
+
+    def _envelope_check(self, parameter):
+        return not self.is_arrangement_clip and (self.track is None or any(p is parameter for p in _track_params(self.track)))
+
+    def automation_envelope(self, parameter):
+        return self._envelopes.get(id(parameter)) if self._envelope_check(parameter) else None
+
+    def create_automation_envelope(self, parameter):
+        if not self._envelope_check(parameter):
+            raise RuntimeError("Not a session clip or parameter belongs to another track.")
+        if id(parameter) in self._envelopes:
+            raise RuntimeError("Envelope already exists")
+        env = self._envelopes[id(parameter)] = self.envelope_class(parameter)
+        return env
+
+    def clear_envelope(self, parameter):
+        self._envelopes.pop(id(parameter), None)
+
+    def clear_all_envelopes(self):
+        self._envelopes.clear()
+
+    @property
+    def has_envelopes(self):
+        return bool(self._envelopes)
+
+    @property
+    def automation_envelopes(self):
+        return tuple(self._envelopes.values())
+
+
+class FakeClip(FakeClipEnvelopes):
+    def __init__(self, length, midi=True, name="", start_time=0.0, track=None, arrangement=False):
         self.name = name
+        self.track = track
+        self.is_arrangement_clip = arrangement
+        self._envelopes = {}
         self.color = 0x00BFAF
         self.length = float(length)
         self.start_time = float(start_time)  # position on the timeline (arrangement clips)
@@ -271,7 +425,7 @@ class FakeClipSlot:
             raise RuntimeError("Can only create MIDI clips on MIDI tracks")
         if self.clip is not None:
             raise RuntimeError("Clip slot is not empty")
-        self.clip = FakeClip(length)
+        self.clip = FakeClip(length, track=self._track)
 
     def create_audio_clip(self, path):
         if self._track.has_midi_input:
@@ -329,6 +483,7 @@ class FakeTrack:
         self.input_routing_type = Routing("All Ins")
         self.output_routing_type = Routing("Master")
         self.arrangement_clips = []
+        self.automation = []  # (start, end, envelope): what duplicated clips wrote on the timeline
         # Live's meters: momentary peaks per channel, and the larger one held for ~1 s.
         self.output_meter_left = 0.0
         self.output_meter_right = 0.0
@@ -362,16 +517,34 @@ class FakeTrack:
             raise RuntimeError("Clips can only be created on MIDI tracks")
         if not 0 <= start_time <= 1576800:
             raise RuntimeError("Time out of range")
-        clip = FakeClip(length, midi=True, start_time=start_time)
+        clip = FakeClip(length, midi=True, start_time=start_time, track=self, arrangement=True)
         self.arrangement_clips.append(clip)
         return clip
 
     def duplicate_clip_to_arrangement(self, clip, destination_time):
         if clip.is_midi_clip != self.has_midi_input:
             raise RuntimeError("Clip type doesn't match the track")
-        copy = FakeClip(clip.length, midi=clip.is_midi_clip, name=clip.name, start_time=destination_time)
+        copy = FakeClip(clip.length, midi=clip.is_midi_clip, name=clip.name, start_time=destination_time, track=self, arrangement=True)
         copy._notes = list(clip._notes)
+        copy.looping, copy.loop_start, copy.loop_end = clip.looping, clip.loop_start, clip.loop_end
+        for key, env in clip._envelopes.items():
+            if self.devices:  # Live 12.4.7 writes track automation over the copy instead
+                self.automation.append((destination_time, destination_time + clip.length, FakeEnvelope(env.parameter, env._events)))
+            else:
+                copy._envelopes[key] = FakeEnvelope(env.parameter, env._events)
         self.arrangement_clips.append(copy)
+        return copy
+
+    def timeline_value(self, parameter, time):
+        """What a parameter plays at a timeline position: a clip envelope or track automation over it, else its value."""
+        for clip in self.arrangement_clips:
+            env = clip._envelopes.get(id(parameter))
+            if env is not None and clip.start_time <= time < clip.end_time:
+                return env.value_at_time(time - clip.start_time)
+        for start, end, env in reversed(self.automation):
+            if env.parameter is parameter and start <= time < end:
+                return env.value_at_time(time - start)
+        return parameter.value
 
     def delete_clip(self, clip):
         self.arrangement_clips.remove(clip)
@@ -396,6 +569,7 @@ SCALES = ("Major", "Minor", "Dorian", "Mixolydian", "Lydian", "Phrygian", "Locri
 class SongView:
     def __init__(self):
         self.selected_track = None
+        self.selected_scene = None
         self.highlighted_clip_slot = None
 
 
@@ -419,6 +593,7 @@ class FakeSong:
         self.master_track = FakeTrack("Master", "master")
         self.view = SongView()
         self.view.selected_track = self.tracks[0]
+        self.view.selected_scene = self.scenes[0]
         self.undo_log = []
         self.undo_depth = 0
         self.undo_steps = 0
@@ -679,9 +854,13 @@ def install():
     live.Application.get_application = lambda: STATE["app"]
     live.Clip = types.ModuleType("Live.Clip")
     live.Clip.MidiNoteSpecification = MidiNoteSpecification
+    live.Envelope = types.ModuleType("Live.Envelope")
+    live.Envelope.EnvelopeEvent = EnvelopeEvent
+    live.Envelope.EnvelopeEventControlCoefficients = EnvelopeEventControlCoefficients
     sys.modules["Live"] = live
     sys.modules["Live.Application"] = live.Application
     sys.modules["Live.Clip"] = live.Clip
+    sys.modules["Live.Envelope"] = live.Envelope
 
     framework = types.ModuleType("_Framework")
     control_surface = types.ModuleType("_Framework.ControlSurface")

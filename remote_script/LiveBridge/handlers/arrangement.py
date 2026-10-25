@@ -6,6 +6,15 @@ there (Track.duplicate_clip_to_arrangement, Live 11). A looping MIDI clip become
 timeline clip per section with its notes repeated to fill it, like recording the scene into
 the Arrangement would. Audio clips are copied end to end.
 
+Clip envelopes: Live won't give a timeline clip an envelope (create_automation_envelope raises
+"Not a session clip"), but duplicate_clip_to_arrangement carries a Session clip's envelopes
+along. So a MIDI clip with envelopes is built in a spare Session slot first, notes and
+envelopes repeated to fill the section, copied to the timeline, and the spare clip deleted. In
+Live 12.4.7 the envelopes stay inside the timeline clip on a track without devices; on a track
+with devices Live writes them as the track's arrangement automation over the clip, which stays
+if the clip is later deleted. The LOM has no access to track automation, so nothing here can
+clear it.
+
 Everything happens in one call, inside one tick: Live merges a script's changes into a
 single undo step only within a tick (see CLAUDE.md), so one undo removes the whole layout.
 """
@@ -17,6 +26,7 @@ import Live
 from ..dispatch import command
 from ..lom import beats_per_bar, require_int, require_number, rnd, safe
 from ..protocol import BridgeError
+from .envelopes import EPSILON, add_events, envelope_points
 
 MAX_SECTIONS = 64
 MAX_COPIES = 4000  # timeline clips per call, so a typo in "bars" can't flood the set
@@ -50,14 +60,19 @@ def arrange_scenes(ctx, sections, start_bar=1, replace=False, show=True):
     for track, clip in in_the_way:
         track.delete_clip(clip)
     scenes = list(song.scenes)
-    warnings, skipped, made, summary = [], [], 0, []
-    for scene, at, length in plan:
-        placed = 0
-        for track in tracks:
-            for slot in _filled_slot(track, scene):
-                placed += _place(track, slot.clip, at, length, warnings, skipped)
-        made += placed
-        summary.append({"scene": scene, "name": safe(lambda s=scene: scenes[s].name, ""), "start_bar": rnd(at / bpb + 1, 3), "bars": rnd(length / bpb, 3), "clips": placed})
+    report = _Report()
+    spare = _SpareSlots(song)
+    made, summary = 0, []
+    try:
+        for scene, at, length in plan:
+            placed = 0
+            for track in tracks:
+                for slot in _filled_slot(track, scene):
+                    placed += _place(track, slot.clip, at, length, report, spare)
+            made += placed
+            summary.append({"scene": scene, "name": safe(lambda s=scene: scenes[s].name, ""), "start_bar": rnd(at / bpb + 1, 3), "bars": rnd(length / bpb, 3), "clips": placed})
+    finally:
+        spare.close()
     if position is not None and not safe(lambda: song.is_playing, False):
         safe(lambda: setattr(song, "current_song_time", position))
 
@@ -66,11 +81,14 @@ def arrange_scenes(ctx, sections, start_bar=1, replace=False, show=True):
     out = {"sections": summary, "clips_created": made, "end_bar": rnd(end / bpb + 1, 3)}
     if in_the_way:
         out["removed"] = len(in_the_way)
-    if skipped:
-        out["skipped_empty"] = skipped[:20]
+    if report.skipped:
+        out["skipped_empty"] = report.skipped[:20]
         out["skipped_note"] = "These clips have no notes inside their section (it's shorter than the clip), so nothing was placed for them."
-    if warnings:
-        out["warnings"] = warnings[:20]
+    if report.automation:
+        out["envelopes"] = sorted(set(report.automation))[:20]
+        out["envelopes_note"] = "These clips' envelopes are on the timeline. On tracks with devices Live keeps them as track automation, which stays if those clips are deleted or replaced later; undo removes it."
+    if report.warnings:
+        out["warnings"] = report.warnings[:20]
     if any(safe(lambda t=t: t.playing_slot_index, -1) >= 0 for t in tracks):
         out["note"] = "Some tracks are playing Session clips and ignore the timeline until those stop (or you click Back to Arrangement)."
     return out
@@ -132,12 +150,27 @@ def _copies_needed(track, clip, length):
     return max(1, int(math.ceil(length / span - 1e-9))) if looping and span > 0 else 1
 
 
-def _place(track, clip, at, length, warnings, skipped):
+class _Report:
+    def __init__(self):
+        self.warnings, self.skipped, self.automation = [], [], []
+
+
+def _envelopes(clip):
+    """The clip's envelopes that have breakpoints (a new, empty one just follows its parameter)."""
+    if not safe(lambda: clip.has_envelopes, False):
+        return []
+    return [env for env in safe(lambda: list(clip.automation_envelopes), []) if hasattr(env, "events_in_range") and len(env.events_in_range(-LAST_BEAT, LAST_BEAT))]
+
+
+def _place(track, clip, at, length, report, spare):
     """Put one section's clip on the timeline. Returns how many timeline clips it made."""
+    envelopes = _envelopes(clip)
+    if envelopes:
+        report.automation.append("%s: %s (%s)" % (track.name, clip.name, ", ".join(env.parameter.name for env in envelopes)))
     if _rebuilds(track, clip):
-        made = _rebuild_midi(track, clip, at, length)
+        made = _rebuild_midi(track, clip, at, length, envelopes, spare)
         if not made:
-            skipped.append("%s: %s" % (track.name, clip.name))
+            report.skipped.append("%s: %s" % (track.name, clip.name))
         return made
     copies = _copies_needed(track, clip, length)
     span = float(clip.length)
@@ -145,17 +178,75 @@ def _place(track, clip, at, length, warnings, skipped):
         track.duplicate_clip_to_arrangement(clip, at + k * span)
     overhang = copies * span - length
     if overhang > 1e-6:
-        warnings.append("'%s' on '%s' runs %g beats past its section; trim it in Live." % (clip.name, track.name, rnd(overhang, 3)))
+        report.warnings.append("'%s' on '%s' runs %g beats past its section; trim it in Live." % (clip.name, track.name, rnd(overhang, 3)))
     return copies
 
 
-def _rebuild_midi(track, clip, at, length):
-    """One timeline clip for the section, or none when no notes fall inside it (a riser at the end
+def _rebuild_midi(track, clip, at, length, envelopes, spare):
+    """One timeline clip for the section, or none when nothing falls inside it (a riser at the end
     of a 32-bar clip in a 24-bar section): an empty clip on the timeline is just clutter."""
     src, span, repeats = _region(clip)
     if span <= 0:
         return 0
     size = length if repeats else min(span, length)
+    fields = _section_notes(clip, src, span, size, repeats)
+    if envelopes:
+        return _rebuild_in_session(track, clip, at, size, fields, [(env.parameter, _section_envelope(env, src, span, size, repeats)) for env in envelopes], spare)
+    if not fields:
+        return 0
+    new = track.create_midi_clip(at, size)
+    if new is None or not hasattr(new, "add_new_notes"):
+        new = next((c for c in _timeline(track) if abs(c.start_time - at) < 1e-6 and c.is_midi_clip), None)
+        if new is None:
+            raise BridgeError("live_error", "Live didn't show the new clip on '%s' at beat %s." % (track.name, rnd(at, 3)))
+    _copy_looks(clip, new)
+    new.add_new_notes(tuple(Live.Clip.MidiNoteSpecification(**f) for f in fields))
+    return 1
+
+
+def _rebuild_in_session(track, clip, at, size, fields, envelopes, spare):
+    """Build the section's clip in a spare Session slot, copy it to the timeline (envelopes come
+    along, which a timeline clip can't be given), then delete the spare clip."""
+    slot = spare.slot(track)
+    slot.create_clip(size)
+    temp = slot.clip
+    try:
+        _copy_looks(clip, temp)
+        if fields:
+            temp.add_new_notes(tuple(Live.Clip.MidiNoteSpecification(**f) for f in fields))
+        for param, points in envelopes:
+            add_events(temp.create_automation_envelope(param), points)
+        track.duplicate_clip_to_arrangement(temp, at)
+    finally:
+        slot.delete_clip()
+    return 1
+
+
+def _copy_looks(clip, new):
+    new.name = clip.name
+    color = safe(lambda: clip.color)
+    if color is not None:
+        safe(lambda: setattr(new, "color", color))
+
+
+def _section_envelope(env, src, span, size, repeats):
+    """(time, raw value) breakpoints for the section clip: the envelope over the clip's loop,
+    repeated like the notes. Each pass starts at the loop start's value and ends at the value
+    reached where it stops, so a ramp that resets at the loop point resets on every pass."""
+    at_start = envelope_points(env, src, src)
+    first = at_start[-1][1] if at_start else float(env.value_at_time(src))
+    inner = [(t - src, v) for t, v in envelope_points(env, src, src + span) if src < t]
+    out = []
+    for k in range(int(math.ceil(size / span - 1e-9)) if repeats else 1):
+        offset = k * span
+        piece = min(span, size - offset)
+        points = [(offset, first)] + [(offset + t, v) for t, v in inner if t < piece - EPSILON] + [(offset + piece, float(env.value_at_time(src + piece)))]
+        out.extend(p for p in points if not out or p != out[-1])
+    return out
+
+
+def _section_notes(clip, src, span, size, repeats):
+    """MidiNoteSpecification fields for the section: the loop's notes repeated to fill `size`."""
     notes = clip.get_notes_extended(0, 128, src, span)
     fields = []
     for k in range(int(math.ceil(size / span - 1e-9)) if repeats else 1):
@@ -175,16 +266,31 @@ def _rebuild_midi(track, clip, at, length):
                     "release_velocity": safe(lambda n=n: n.release_velocity, 64.0),
                 }
             )
-    if not fields:
-        return 0
-    new = track.create_midi_clip(at, size)
-    if new is None or not hasattr(new, "add_new_notes"):
-        new = next((c for c in _timeline(track) if abs(c.start_time - at) < 1e-6 and c.is_midi_clip), None)
-        if new is None:
-            raise BridgeError("live_error", "Live didn't show the new clip on '%s' at beat %s." % (track.name, rnd(at, 3)))
-    new.name = clip.name
-    color = safe(lambda: clip.color)
-    if color is not None:
-        safe(lambda: setattr(new, "color", color))
-    new.add_new_notes(tuple(Live.Clip.MidiNoteSpecification(**f) for f in fields))
-    return 1
+    return fields
+
+
+class _SpareSlots:
+    """Empty Session slots to build timeline clips in: a track's own empty slot, or one in a scene
+    made for the purpose and deleted at the end (all in the same undo step)."""
+
+    def __init__(self, song):
+        self.song = song
+        self.scene = None
+        self.selected = None
+
+    def slot(self, track):
+        slots = list(track.clip_slots)
+        for i, s in enumerate(slots):
+            if not s.has_clip and i != self.scene:
+                return s
+        if self.scene is None:
+            self.selected = safe(lambda: self.song.view.selected_scene)
+            self.song.create_scene(-1)
+            self.scene = len(self.song.scenes) - 1
+        return list(track.clip_slots)[self.scene]
+
+    def close(self):
+        if self.scene is not None:
+            self.song.delete_scene(self.scene)
+            if self.selected is not None:
+                safe(lambda: setattr(self.song.view, "selected_scene", self.selected))

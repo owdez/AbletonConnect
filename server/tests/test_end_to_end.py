@@ -146,13 +146,40 @@ async def test_errors_reach_claude_as_tool_errors(stack):
         assert "track_index is required" in out["error"]
 
 
+async def test_clip_envelopes_through_every_layer(stack):
+    async with connect() as client:
+        song, _ = stack
+        await tool(client, "create_clip", track_index=0, clip_slot_index=0, length=16, name="Build")
+        ramp = {"start": 0, "end": 16, "from": "-24 dB", "to": "-6 dB", "curve": "ease_in"}
+        drawn = await tool(client, "set_clip_envelope", track_index=0, clip_slot_index=0, parameter="volume", ramp=ramp)
+        points = drawn["envelope"]["points"]
+        assert (points[0]["display"], points[-1]["display"], len(points)) == ("-24.0 dB", "-6.0 dB", 17)
+        throw = [
+            {"time": 12, "value": "-inf dB", "curve": "hold"},
+            {"time": 14, "value": "-3 dB"},
+            {"time": 16, "value": "-inf dB"},
+        ]
+        await tool(client, "set_clip_envelope", track_index=0, clip_slot_index=0, parameter="send A", points=throw)
+        listed = await tool(client, "get_clip_envelope", track_index=0, clip_slot_index=0)
+        assert [e["parameter"] for e in listed["envelopes"]] == ["Volume", "Send A"]
+        out = await tool(client, "set_clip_envelope", track_index=0, clip_slot_index=0, parameter="pan")
+        assert "exactly one" in out["error"]
+        out = await tool(
+            client, "get_clip_envelope", track_index=0, clip_slot_index=0, parameter=0, device_index=0, device_path=[0]
+        )
+        assert "not both" in out["error"]
+        cleared = await tool(client, "clear_clip_envelope", track_index=0, clip_slot_index=0)
+        assert len(cleared["cleared"]) == 2 and cleared["envelopes_left"] == []
+        assert song.undo_steps == 4
+
+
 async def test_tool_list_matches_bridge_commands(stack):
     async with connect() as client:
         from LiveBridge.dispatch import COMMANDS
 
         tools = {t.name for t in (await client.list_tools()).tools}
         local = {"search_samples"}  # answered from the sample index, not by LiveBridge
-        assert len(tools) == 32
+        assert len(tools) == 35
         assert tools - local <= set(COMMANDS)
 
 

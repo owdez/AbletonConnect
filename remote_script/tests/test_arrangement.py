@@ -1,5 +1,6 @@
 """arrange_scenes against the fake Live."""
 
+import fake_live
 import pytest
 from helpers import failure, make_dispatcher, result
 
@@ -131,3 +132,66 @@ def test_rename_and_delete_clips(d, scenes, live):
     assert "exactly one" in failure(d, "set_clip", track_index=0, name="x", clip_slot_index=0, arrangement_index=0)["message"]
     assert failure(d, "delete_clip", track_index=0, arrangement_index=5)["type"] == "not_found"
     assert failure(d, "delete_clip", track_index=0, clip_slot_index=2)["type"] == "not_found"
+
+
+# ---- clip envelopes on the timeline -------------------------------------------------------------
+
+
+def ramp(d, slot, start, end, frm, to, track=0, parameter="volume", **kw):
+    r = {"start": start, "end": end, "from": frm, "to": to}
+    return result(d, "set_clip_envelope", track_index=track, clip_slot_index=slot, parameter=parameter, ramp=r, **kw)
+
+
+def test_envelopes_repeat_with_the_notes_in_one_timeline_clip(d, scenes, live):
+    """Track 0 has no devices: Live keeps the envelope inside the timeline clip."""
+    song, _ = live
+    ramp(d, 0, 0, 4, 0.2, 0.6)  # a 1-bar kick loop that swells every bar
+    steps, n_scenes = song.undo_steps, len(song.scenes)
+    out = result(d, "arrange_scenes", sections=[{"scene": 0, "bars": 2.5}])
+    assert song.undo_steps == steps + 1 and len(song.scenes) == n_scenes
+    assert out["envelopes"] == ["1-MIDI: Intro kick (Track Volume)"] and "track automation" in out["envelopes_note"]
+    [clip] = song.tracks[0].arrangement_clips
+    assert (clip.name, clip.start_time, clip.end_time, len(clip._notes)) == ("Intro kick", 0, 10, 10)
+    [env] = clip.automation_envelopes
+    values = [round(env.value_at_time(t), 3) for t in (0, 2, 4, 4.001, 6, 8.001, 9, 10)]
+    assert values == [0.2, 0.4, 0.6, 0.2, 0.4, 0.2, 0.3, 0.4]  # restarts every bar, stops halfway through the third
+    vol = song.tracks[0].mixer_device.volume
+    assert song.tracks[0].timeline_value(vol, 5) == 0.3 and song.tracks[0].timeline_value(vol, 12) == vol.value
+    assert not any(s.has_clip for s in song.tracks[0].clip_slots[3:])  # the spare Session clip is gone
+
+
+def test_envelopes_become_track_automation_on_tracks_with_devices(d, scenes, live):
+    song, _ = live
+    track = song.tracks[0]
+    track.devices.append(fake_live.make_operator())
+    ramp(d, 1, 0, 8, "200 Hz", "8 kHz", device_index=0, parameter="Filter Freq")
+    result(d, "arrange_scenes", sections=[{"scene": 1, "bars": 4}], start_bar=3)
+    [clip] = track.arrangement_clips
+    assert (clip.start_time, clip.end_time, clip.automation_envelopes) == (8, 24, ())
+    freq = track.devices[0].parameters[1]
+    shown = [freq.str_for_value(track.timeline_value(freq, t)) for t in (8, 12, 16, 16.001, 20)]
+    assert shown == ["200.0 Hz", "1.26 kHz", "8.00 kHz", "200.0 Hz", "1.26 kHz"]  # a 2-bar sweep, twice
+    assert track.timeline_value(freq, 4) == freq.value
+
+
+def test_an_envelope_only_clip_is_placed_and_a_spare_scene_is_used_when_slots_are_full(d, scenes, live):
+    song, _ = live
+    track = song.tracks[0]
+    for i in range(3, 8):
+        result(d, "create_clip", track_index=0, clip_slot_index=i, length=4)
+    ramp(d, 3, 0, 4, "-inf dB", "0 dB", parameter="send A")  # no notes, just a send swell
+    selected, n_scenes = song.view.selected_scene, len(song.scenes)
+    out = result(d, "arrange_scenes", sections=[{"scene": 3, "bars": 1}])
+    assert out["sections"][0]["clips"] == 1 and "skipped_empty" not in out
+    assert len(song.scenes) == n_scenes and song.view.selected_scene is selected
+    send = track.mixer_device.sends[0]
+    assert send.str_for_value(track.timeline_value(send, 2)) == "-12.1 dB"  # halfway along the fader
+
+
+def test_audio_clips_take_their_envelopes_along(d, scenes, live):
+    song, _ = live
+    ramp(d, 1, 0, 4, "C", "50R", track=1, parameter="pan")
+    out = result(d, "arrange_scenes", sections=[{"scene": 1, "bars": 2}])
+    assert "2-Audio: Kick 01 (Track Panning)" in out["envelopes"]
+    copies = song.tracks[1].arrangement_clips
+    assert len(copies) == 2 and all(round(c.automation_envelopes[0].value_at_time(2), 3) == 0.5 for c in copies)

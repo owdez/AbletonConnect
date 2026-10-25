@@ -395,6 +395,66 @@ async def main() -> int:
     if out:
         t.check("stop_playback", out["playing"] is False)
 
+    print("\nClip envelopes")
+    ramp = {"start": 0, "end": 4, "from": "-24 dB", "to": "-6 dB", "curve": "ease_in"}
+    out = await t.step(
+        "set_clip_envelope",
+        t.run(
+            "set_clip_envelope",
+            track_index=midi,
+            clip_slot_index=0,
+            parameter="volume",
+            ramp=ramp,
+        ),
+    )
+    if out:
+        pts = out["envelope"]["points"]
+        t.check(
+            "set_clip_envelope volume ramp",
+            pts[0]["display"].startswith("-24.0")
+            and pts[-1]["display"].startswith("-6.0")
+            and len(pts) == 17,
+            f"{len(pts)} points, {pts[0]['display']} -> {pts[-1]['display']}",
+        )
+    out = await t.step(
+        "get_clip_envelope",
+        t.run(
+            "get_clip_envelope",
+            mutating=False,
+            track_index=midi,
+            clip_slot_index=0,
+            parameter="volume",
+            resolution=1.0,
+        ),
+    )
+    if out:
+        values = [s["value"] for s in out["envelope"]["samples"]]
+        t.check(
+            "get_clip_envelope rises",
+            len(values) == 5 and values == sorted(values),
+            ", ".join(s["display"] for s in out["envelope"]["samples"]),
+        )
+    pan = [{"time": 0, "value": "C", "curve": "hold"}, {"time": 2, "value": "50L"}]
+    await t.step(
+        "set_clip_envelope pan",
+        t.run(
+            "set_clip_envelope",
+            track_index=midi,
+            clip_slot_index=0,
+            parameter="pan",
+            points=pan,
+        ),
+    )
+    await t.step("undo envelope", t.run("undo"))
+    listed = await t.step(
+        "get_clip_envelope list",
+        t.run("get_clip_envelope", mutating=False, track_index=midi, clip_slot_index=0),
+    )
+    if listed:
+        names = [e["parameter"] for e in listed["envelopes"]]
+        t.check("one undo removes one envelope write", names == ["Volume"], f"{names}")
+    # The volume envelope stays for the arrange_scenes check below.
+
     print("\nAudio track and samples")
     audio = None
     out = await t.step(
@@ -516,6 +576,8 @@ async def main() -> int:
             out["clips_created"] >= 1 and placed and placed[0]["end_bar"] == 2005,
             f"{out['clips_created']} clip(s), {placed}",
         )
+        carried = [e for e in out.get("envelopes", []) if e.startswith("LB smoke")]
+        t.check("arrange_scenes carries clip envelopes", bool(carried), f"{carried}")
         await t.step("undo arrange_scenes", t.run("undo"))
         detail = await t.run("get_track_info", mutating=False, track_index=midi)
         left = [c for c in detail.get("arrangement", []) if c["start_bar"] >= 2001]
