@@ -204,6 +204,13 @@ That file is git-ignored; read it when it exists.
   The API can't set an arrangement clip's length, which is why MIDI is
   rebuilt rather than copied. Positions are quarter-note beats:
   `beats_per_bar = numerator * 4 / denominator`.
+- A MIDI clip with no notes inside its section (a riser at the end of a
+  32-bar clip in a 24-bar section) is skipped, not placed empty, and listed
+  in `skipped_empty`. It restores the playhead: Live moves it to each clip
+  `create_midi_clip` makes.
+- Timeline clips are addressed by their index in `track.arrangement_clips`
+  (`arrangement_index` in `set_clip` / `delete_clip`, listed by
+  `get_track_info`).
 - It does everything in one handler call, one tick, so it's one undo step.
   Don't turn it into a multi-tick generator: changes from different ticks
   become separate undo steps.

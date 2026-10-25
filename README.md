@@ -15,13 +15,13 @@ no telemetry and no outbound network traffic.
 
 ## What Claude can do
 
-28 tools, each returning compact JSON with the state after the change:
+30 tools, each returning compact JSON with the state after the change:
 
 | Area | Tools |
 |---|---|
 | Session | `get_session_info`, `get_track_info`, `set_tempo`, `set_scale`, `undo` |
 | Tracks & mixer | `create_midi_track`, `create_audio_track`, `set_track` (rename, arm), `delete_track`, `set_mixer` (volume raw or dB, pan, sends, mute, solo) |
-| Clips & notes | `create_clip`, `add_notes`, `get_clip_notes`, `fire_clip`, `stop_clip` |
+| Clips & notes | `create_clip`, `add_notes`, `get_clip_notes`, `fire_clip`, `stop_clip`, `set_clip` (rename), `delete_clip` (Session or timeline) |
 | Scenes & Arrangement | `create_scene`, `set_scene` (name), `delete_scene`, `fire_scene`, `arrange_scenes` (lay scenes out on the timeline as song sections) |
 | Transport | `start_playback`, `stop_playback` |
 | Sound design | `get_device_parameters`, `set_device_parameter` (by index or name; what Live displays, like `"120 Hz"`, `"350 ms"` or `"1/4"`, or raw or normalized values) |
@@ -190,9 +190,10 @@ and the MCP server read it; Live needs a restart to pick up a port change:
 
 ## Limitations
 
-- The Arrangement can be filled from scenes (`arrange_scenes`), but clips on
-  the timeline can't be edited one by one, and there's no automation yet.
-- Tracks and scenes can be deleted; single clips and devices can't yet.
+- The Arrangement can be filled from scenes (`arrange_scenes`), and timeline
+  clips can be renamed or deleted, but not moved or edited. No automation or
+  clip envelopes yet.
+- Tracks, scenes and clips can be deleted; devices can't yet.
 - No input, output or sidechain routing yet.
 - Only parameters Live exposes for automation can be set. Some device
   settings, like Drift's Voice Mode, have no parameter.

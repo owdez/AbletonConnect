@@ -211,6 +211,11 @@ class FakeClipSlot:
         if self.clip is not None:
             self.clip.is_triggered = True
 
+    def delete_clip(self):
+        if self.clip is None:
+            raise RuntimeError("No clip in slot")
+        self.clip = None
+
     def stop(self):
         self.is_triggered = False
         if self.clip is not None:

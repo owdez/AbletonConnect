@@ -283,6 +283,36 @@ async def stop_clip(
     return await call("stop_clip", {"track_index": track_index, "clip_slot_index": clip_slot_index}, mutating=True)
 
 
+ArrangementIndex = Annotated[
+    int | None, Field(ge=0, description="A timeline clip's index from get_track_info's arrangement list.")
+]
+
+
+@mcp.tool(annotations=WRITE, structured_output=False)
+async def set_clip(
+    track_index: int,
+    name: str,
+    clip_slot_index: Annotated[int | None, Field(ge=0, description="Session View slot (= scene index).")] = None,
+    arrangement_index: ArrangementIndex = None,
+) -> str:
+    """Rename a clip: a Session clip by clip_slot_index, or a timeline clip by arrangement_index."""
+    args = {"track_index": track_index, "name": name}
+    args.update(clip_slot_index=clip_slot_index, arrangement_index=arrangement_index)
+    return await call("set_clip", args, mutating=True)
+
+
+@mcp.tool(annotations=REPLACE, structured_output=False)
+async def delete_clip(
+    track_index: int,
+    clip_slot_index: Annotated[int | None, Field(ge=0, description="Session View slot (= scene index).")] = None,
+    arrangement_index: ArrangementIndex = None,
+) -> str:
+    """Delete a clip (undoable): a Session clip by clip_slot_index, or a timeline clip by
+    arrangement_index. Later timeline clips on the track move down one index."""
+    args = {"track_index": track_index, "clip_slot_index": clip_slot_index, "arrangement_index": arrangement_index}
+    return await call("delete_clip", args, mutating=True)
+
+
 # ---- devices ------------------------------------------------------------------------------------
 
 
@@ -443,8 +473,9 @@ async def arrange_scenes(
     """Put scenes on the Arrangement timeline back to back, like recording them into the Arrangement:
     each track's clip from a section's scene fills that section. A looping MIDI clip becomes one
     timeline clip as long as the section with its notes repeated; a non-looping clip plays once;
-    audio clips are copied end to end. Tracks with no clip in a scene stay empty there. The whole
-    layout is one undo step. Fails if timeline clips are in the way unless replace is true."""
+    audio clips are copied end to end. Tracks with no clip in a scene stay empty there, and a MIDI
+    clip whose notes all fall past a shorter section's end is skipped (listed in skipped_empty).
+    The whole layout is one undo step. Fails if timeline clips are in the way unless replace is true."""
     payload = {
         "sections": [s.model_dump() for s in sections],
         "start_bar": start_bar,

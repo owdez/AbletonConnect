@@ -50,12 +50,12 @@ def arrange_scenes(ctx, sections, start_bar=1, replace=False, show=True):
     for track, clip in in_the_way:
         track.delete_clip(clip)
     scenes = list(song.scenes)
-    warnings, made, summary = [], 0, []
+    warnings, skipped, made, summary = [], [], 0, []
     for scene, at, length in plan:
         placed = 0
         for track in tracks:
             for slot in _filled_slot(track, scene):
-                placed += _place(track, slot.clip, at, length, warnings)
+                placed += _place(track, slot.clip, at, length, warnings, skipped)
         made += placed
         summary.append({"scene": scene, "name": safe(lambda s=scene: scenes[s].name, ""), "start_bar": rnd(at / bpb + 1, 3), "bars": rnd(length / bpb, 3), "clips": placed})
     if position is not None and not safe(lambda: song.is_playing, False):
@@ -66,6 +66,9 @@ def arrange_scenes(ctx, sections, start_bar=1, replace=False, show=True):
     out = {"sections": summary, "clips_created": made, "end_bar": rnd(end / bpb + 1, 3)}
     if in_the_way:
         out["removed"] = len(in_the_way)
+    if skipped:
+        out["skipped_empty"] = skipped[:20]
+        out["skipped_note"] = "These clips have no notes inside their section (it's shorter than the clip), so nothing was placed for them."
     if warnings:
         out["warnings"] = warnings[:20]
     if any(safe(lambda t=t: t.playing_slot_index, -1) >= 0 for t in tracks):
@@ -129,10 +132,13 @@ def _copies_needed(track, clip, length):
     return max(1, int(math.ceil(length / span - 1e-9))) if looping and span > 0 else 1
 
 
-def _place(track, clip, at, length, warnings):
+def _place(track, clip, at, length, warnings, skipped):
     """Put one section's clip on the timeline. Returns how many timeline clips it made."""
     if _rebuilds(track, clip):
-        return _rebuild_midi(track, clip, at, length)
+        made = _rebuild_midi(track, clip, at, length)
+        if not made:
+            skipped.append("%s: %s" % (track.name, clip.name))
+        return made
     copies = _copies_needed(track, clip, length)
     span = float(clip.length)
     for k in range(copies):
@@ -144,10 +150,33 @@ def _place(track, clip, at, length, warnings):
 
 
 def _rebuild_midi(track, clip, at, length):
+    """One timeline clip for the section, or none when no notes fall inside it (a riser at the end
+    of a 32-bar clip in a 24-bar section): an empty clip on the timeline is just clutter."""
     src, span, repeats = _region(clip)
     if span <= 0:
         return 0
     size = length if repeats else min(span, length)
+    notes = clip.get_notes_extended(0, 128, src, span)
+    fields = []
+    for k in range(int(math.ceil(size / span - 1e-9)) if repeats else 1):
+        for n in notes:
+            start = n.start_time - src + k * span
+            if start >= size - 1e-9:
+                continue
+            fields.append(
+                {
+                    "pitch": n.pitch,
+                    "start_time": start,
+                    "duration": min(n.duration, size - start),
+                    "velocity": n.velocity,
+                    "mute": bool(n.mute),
+                    "probability": safe(lambda n=n: n.probability, 1.0),
+                    "velocity_deviation": safe(lambda n=n: n.velocity_deviation, 0.0),
+                    "release_velocity": safe(lambda n=n: n.release_velocity, 64.0),
+                }
+            )
+    if not fields:
+        return 0
     new = track.create_midi_clip(at, size)
     if new is None or not hasattr(new, "add_new_notes"):
         new = next((c for c in _timeline(track) if abs(c.start_time - at) < 1e-6 and c.is_midi_clip), None)
@@ -157,25 +186,5 @@ def _rebuild_midi(track, clip, at, length):
     color = safe(lambda: clip.color)
     if color is not None:
         safe(lambda: setattr(new, "color", color))
-    notes = clip.get_notes_extended(0, 128, src, span)
-    specs = []
-    for k in range(int(math.ceil(size / span - 1e-9)) if repeats else 1):
-        for n in notes:
-            start = n.start_time - src + k * span
-            if start >= size - 1e-9:
-                continue
-            specs.append(
-                Live.Clip.MidiNoteSpecification(
-                    pitch=n.pitch,
-                    start_time=start,
-                    duration=min(n.duration, size - start),
-                    velocity=n.velocity,
-                    mute=bool(n.mute),
-                    probability=safe(lambda n=n: n.probability, 1.0),
-                    velocity_deviation=safe(lambda n=n: n.velocity_deviation, 0.0),
-                    release_velocity=safe(lambda n=n: n.release_velocity, 64.0),
-                )
-            )
-    if specs:
-        new.add_new_notes(tuple(specs))
+    new.add_new_notes(tuple(Live.Clip.MidiNoteSpecification(**f) for f in fields))
     return 1

@@ -189,7 +189,7 @@ def track_detail(track, index, song, track_type="track"):
         timeline = list(safe(lambda: track.arrangement_clips, ()) or ())
         if timeline:
             bpb = beats_per_bar(song)
-            out["arrangement"] = [arrangement_clip_brief(c, bpb) for c in timeline[:ARRANGEMENT_LIMIT]]
+            out["arrangement"] = [arrangement_clip_brief(c, bpb, i) for i, c in enumerate(timeline[:ARRANGEMENT_LIMIT])]
             if len(timeline) > ARRANGEMENT_LIMIT:
                 out["arrangement_clips"] = len(timeline)
     return out
@@ -198,9 +198,11 @@ def track_detail(track, index, song, track_type="track"):
 ARRANGEMENT_LIMIT = 64
 
 
-def arrangement_clip_brief(clip, bpb):
-    """A clip on the timeline, positioned in 1-based bars (bar 1 = beat 0)."""
+def arrangement_clip_brief(clip, bpb, index):
+    """A clip on the timeline, positioned in 1-based bars (bar 1 = beat 0). `index` is its place in
+    track.arrangement_clips, which set_clip and delete_clip take as arrangement_index."""
     return {
+        "index": index,
         "name": clip.name,
         "start_bar": rnd(clip.start_time / bpb + 1, 3),
         "end_bar": rnd(clip.end_time / bpb + 1, 3),

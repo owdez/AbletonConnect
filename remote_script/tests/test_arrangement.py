@@ -49,7 +49,7 @@ def test_sections_land_back_to_back_in_one_undo_step(d, scenes, live):
     # Audio: copied end to end; the 4-beat loop fills 3 bars exactly.
     assert timeline(song, 1) == [("Kick 01.wav", 16, 20), ("Kick 01.wav", 20, 24), ("Kick 01.wav", 24, 28)]
     info = result(d, "get_track_info", track_index=0)
-    assert info["arrangement"][1] == {"name": "Riff", "start_bar": 5, "end_bar": 8}
+    assert info["arrangement"][1] == {"index": 1, "name": "Riff", "start_bar": 5, "end_bar": 8}
     assert result(d, "get_session_info")["tracks"][0]["arrangement_clips"] == 3
 
 
@@ -104,3 +104,30 @@ def test_playhead_stays_put(d, scenes, live, monkeypatch):
     monkeypatch.setattr(track, "create_midi_clip", create_and_move)
     result(d, "arrange_scenes", sections=[{"scene": 0, "bars": 4}, {"scene": 1, "bars": 4}])
     assert song.current_song_time == 0.0
+
+
+def test_clips_with_no_notes_in_their_section_are_skipped(d, scenes, live):
+    """A riser at the end of a long clip doesn't reach a shorter section: place nothing, say so."""
+    song, _ = live
+    result(d, "create_clip", track_index=0, clip_slot_index=3, length=32, name="Riser")
+    result(d, "add_notes", track_index=0, clip_slot_index=3, notes=notes(24, pitch=60))
+    out = result(d, "arrange_scenes", sections=[{"scene": 3, "bars": 4}, {"scene": 3, "bars": 8}])
+    assert [s["clips"] for s in out["sections"]] == [0, 1]
+    assert out["skipped_empty"] == ["1-MIDI: Riser"]
+    assert timeline(song) == [("Riser", 16, 48)]
+
+
+def test_rename_and_delete_clips(d, scenes, live):
+    song, _ = live
+    result(d, "arrange_scenes", sections=[{"scene": 0, "bars": 4}, {"scene": 1, "bars": 4}])
+    out = result(d, "set_clip", track_index=0, arrangement_index=1, name="Verse riff")
+    assert out["clip"] == {"index": 1, "name": "Verse riff", "start_bar": 5, "end_bar": 9} and out["previous_name"] == "Riff"
+    assert result(d, "set_clip", track_index=0, clip_slot_index=0, name="Kick")["clip"]["name"] == "Kick"
+    out = result(d, "delete_clip", track_index=0, arrangement_index=0)
+    assert out["deleted"]["name"] == "Intro kick" and out["arrangement_clips"] == 1
+    assert result(d, "delete_clip", track_index=0, clip_slot_index=2)["deleted"]["name"] == "Hit"
+    assert not song.tracks[0].clip_slots[2].has_clip
+    assert "exactly one" in failure(d, "delete_clip", track_index=0)["message"]
+    assert "exactly one" in failure(d, "set_clip", track_index=0, name="x", clip_slot_index=0, arrangement_index=0)["message"]
+    assert failure(d, "delete_clip", track_index=0, arrangement_index=5)["type"] == "not_found"
+    assert failure(d, "delete_clip", track_index=0, clip_slot_index=2)["type"] == "not_found"
