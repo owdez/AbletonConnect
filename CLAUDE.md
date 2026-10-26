@@ -324,6 +324,10 @@ That file is git-ignored; read it when it exists.
   `get_meters` reports the level and adds `"mute": true`.
 - MIDI tracks with no instrument have `has_audio_output` False; their
   meters read 0.
+- A rack macro mapped to one parameter displays that parameter's value, and
+  `str_for_value` on the macro returns it too ("4.15 kHz" on Dark Corner
+  Pad's Low Pass Filter, range 0-127), so display-text bisection works on
+  macros without knowing the mapping. Unmapped macros show plain numbers.
 
 ## Transport and arm (verified in Live 12.4.7)
 

@@ -536,26 +536,26 @@ def value_for_display(param, text):
     """
     target = parse_display(text)
     if target is None or math.isnan(target[0]):
-        raise BridgeError("bad_args", "Can't read %r as a value for '%s'. Use what Live displays, like '120 Hz', '350 ms', '-6 dB' or '25 %%'." % (text, param.name))
+        raise BridgeError("bad_args", "Can't read %r as a value for '%s', which goes from %s. Use what Live displays, like '120 Hz', '350 ms', '-6 dB' or '25 %%'." % (text, param.name, param_range(param)))
     lo, hi = float(param.min), float(param.max)
     at_lo, at_hi = parse_display(param_display(param, lo)), parse_display(param_display(param, hi))
     if at_lo is None or at_hi is None or at_lo[1] != at_hi[1]:
-        raise BridgeError("bad_args", "'%s' displays values like %r, which can't be targeted by text. Pass a raw number from %s to %s." % (param.name, param_display(param), rnd(lo), rnd(hi)))
+        raise BridgeError("bad_args", "'%s' goes from %s, which can't be targeted by text. Pass a raw number." % (param.name, param_range(param)))
     unit = at_lo[1]
     value, wanted_unit = target
     if wanted_unit and wanted_unit != unit:
-        raise BridgeError("bad_args", "'%s' is shown like %r; %r is in different units." % (param.name, param_display(param, hi), text))
+        raise BridgeError("bad_args", "%r is in different units from '%s', which goes from %s." % (text, param.name, param_range(param)))
     rising = at_hi[0] >= at_lo[0]
     bottom, top = (at_lo[0], at_hi[0]) if rising else (at_hi[0], at_lo[0])
     slack = 0.005 * max(abs(bottom), abs(top), 1e-9) if not math.isinf(top - bottom) else 0.0
     if value < bottom - slack or value > top + slack:
-        raise BridgeError("bad_args", "%r is outside '%s' (%s to %s)." % (text, param.name, param_display(param, lo), param_display(param, hi)))
+        raise BridgeError("bad_args", "%r is outside '%s', which goes from %s." % (text, param.name, param_range(param)))
     a, b = lo, hi
     for _ in range(60):
         mid = (a + b) / 2.0
         shown = parse_display(param_display(param, mid))
         if shown is None or shown[1] != unit:
-            raise BridgeError("bad_args", "'%s' shows %r partway through its range, so it can't be targeted by text. Pass a raw number instead." % (param.name, param_display(param, mid)))
+            raise BridgeError("bad_args", "'%s' shows %r partway through its range (%s), so it can't be targeted by text. Pass a raw number." % (param.name, param_display(param, mid), param_range(param)))
         if (shown[0] < value) == rising:
             a = mid
         else:
@@ -580,6 +580,12 @@ def set_param_value(param, value, label=None):
             raise BridgeError("bad_args", "'%s' takes whole steps from %s to %s, got %s." % (label, rnd(lo), rnd(hi), value))
         value = float(rounded)
     if value < lo - 1e-6 or value > hi + 1e-6:
-        raise BridgeError("bad_args", "%s is out of range for '%s' (%s to %s)." % (rnd(value), label, rnd(lo), rnd(hi)))
+        raise BridgeError("bad_args", "%s is out of range for '%s', which goes from %s." % (rnd(value), label, param_range(param)))
     param.value = min(max(value, lo), hi)
     return param_state(param)
+
+
+def param_range(param):
+    """'20.0 Hz to 20.0 kHz (raw 0 to 1)', for error messages."""
+    lo, hi = float(param.min), float(param.max)
+    return "%s to %s (raw %s to %s)" % (param_display(param, lo), param_display(param, hi), rnd(lo), rnd(hi))

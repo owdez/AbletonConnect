@@ -202,6 +202,40 @@ def make_operator():
     )
 
 
+def make_eq_eight():
+    return FakeDevice(
+        "EQ Eight",
+        type_="audio_effect",
+        parameters=[
+            FakeParam("Device On", 1.0, 0.0, 1.0, quantized=True, items=("Off", "On")),
+            FakeParam("1 Frequency A", 0.3, 0.0, 1.0, display=freq_display),
+            FakeParam("1 Gain A", 0.0, -15.0, 15.0, display=lambda v: "%.2f dB" % v),
+            FakeParam("Dry/Wet", 1.0, 0.0, 1.0, display=lambda v: "%d %%" % round(v * 100)),
+        ],
+    )
+
+
+def make_pad_rack():
+    """Like the 'Dark Corner Pad' preset in Live 12: a macro mapped to one parameter displays that
+    parameter's value (str_for_value too), though its own range is 0-127."""
+
+    def cutoff(v):
+        hz = 683 * (19900 / 683) ** (v / 127)
+        return "%.2f kHz" % (hz / 1000) if hz >= 1000 else "%.0f Hz" % hz
+
+    def balance(v):
+        wet = round(v / 127 * 100)
+        return "%d/%d" % (100 - wet, wet)
+
+    rack = FakeRack("Dark Corner Pad", [FakeChain("Pad", [FakeDevice("Wavetable")])])
+    rack.parameters[1:4] = [
+        FakeParam("Low Pass Filter", 68.0, 0.0, 127.0, display=cutoff),
+        FakeParam("Delay Dry/Wet", 17.0, 0.0, 127.0, display=lambda v: "%d %%" % round(v / 127 * 50)),
+        FakeParam("Reverb Type", 77.0, 0.0, 127.0, display=balance),
+    ]
+    return rack
+
+
 # ---- notes and clips ----------------------------------------------------------------------------
 
 

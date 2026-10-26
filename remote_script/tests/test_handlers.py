@@ -1,5 +1,6 @@
 """Command handlers against the fake Live Object Model."""
 
+import fake_live
 import pytest
 from helpers import call, failure, make_dispatcher, result
 
@@ -286,6 +287,40 @@ def test_stepped_parameters_list_and_take_their_options(operator):
     assert "Options: 8, 6, 4" in failure(d, "set_device_parameter", track_index=0, parameter="LFO Rate", value="1/5")["message"]
     assert result(d, "set_device_parameter", track_index=0, parameter="Transpose", value="+7 st")["parameter"]["value"] == 7
     assert result(d, "set_device_parameter", track_index=0, parameter="Transpose", value="-12")["parameter"]["value"] == -12
+
+
+def test_parameter_values_in_db_percent_and_on_macros(d, live):
+    song, _ = live
+    song.tracks[1].devices = [fake_live.make_eq_eight(), fake_live.make_pad_rack()]
+
+    def shown(device, parameter, value):
+        out = result(d, "set_device_parameter", track_index=1, device_index=device, parameter=parameter, value=value)
+        return out["parameter"]["display"]
+
+    assert shown(0, "1 Gain A", "-6 dB") == "-6.00 dB"
+    assert shown(0, "1 Gain A", "+3.5dB") == "3.50 dB"
+    assert shown(0, "1 Frequency A", "150 Hz") == "150.0 Hz"
+    assert shown(0, "1 Frequency A", "1.2 kHz") == "1.20 kHz"
+    assert shown(0, "Dry/Wet", "40 %") == "40 %"
+    assert shown(0, "Dry/Wet", "25%") == "25 %"
+    # A rack macro shows its target's value, so it takes the target's units.
+    assert shown(1, "Low Pass Filter", "1.2 kHz") == "1.20 kHz"
+    assert shown(1, "Low Pass Filter", "950 Hz") == "950 Hz"
+    assert shown(1, "Delay Dry/Wet", "20 %") == "20 %"
+
+    def error(device, parameter, value):
+        return failure(d, "set_device_parameter", track_index=1, device_index=device, parameter=parameter, value=value)["message"]
+
+    # Unresolvable values say what the parameter's range is.
+    assert error(1, "Low Pass Filter", "150 Hz") == "'150 Hz' is outside 'Low Pass Filter', which goes from 683 Hz to 19.90 kHz (raw 0.0 to 127.0)."
+    assert "different units" in error(1, "Low Pass Filter", "-6 dB") and "683 Hz to 19.90 kHz (raw 0.0 to 127.0)" in error(1, "Low Pass Filter", "-6 dB")
+    assert "-15.00 dB to 15.00 dB (raw -15.0 to 15.0)" in error(0, "1 Gain A", "loud")
+    assert "out of range" in error(0, "1 Gain A", 20) and "-15.00 dB to 15.00 dB" in error(0, "1 Gain A", 20)
+    # Every step of a 0-127 macro is listed short, with its ends and range.
+    message = error(1, "Reverb Type", "20/61")
+    assert message.startswith("'20/61' isn't an option for 'Reverb Type'. Options: 100/0, 99/1, 98/2, 97/3, 96/4,")
+    assert message.endswith(", ..., 0/100 (128 steps, raw 0.0 to 127.0).")
+    assert shown(1, "Reverb Type", "50/50") == "50/50"
 
 
 def test_parse_display():

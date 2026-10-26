@@ -163,8 +163,15 @@ def _value_for_text(param, text):
         close = [(abs(v[0] - wanted[0]), i) for i, v in enumerate(shown) if v is not None and wanted[1] in ("", v[1])]
         if close and min(close)[0] < 0.5:
             return float(param.min) + min(close)[1]
-    listed = ", ".join(options) if len(options) <= 32 else ", ".join(options[:32]) + ", ..."
-    raise BridgeError("bad_args", "'%s' isn't an option for '%s'. Options: %s." % (text, param.name, listed))
+    raise BridgeError("bad_args", "'%s' isn't an option for '%s'. Options: %s." % (text, param.name, _list_options(options, param)))
+
+
+def _list_options(options, param):
+    """Every option, or for long lists (a macro over 128 steps) the first ones, the last and the range."""
+    unique = [o for i, o in enumerate(options) if i == 0 or o != options[i - 1]]
+    if len(unique) <= 32:
+        return ", ".join(unique)
+    return "%s, ..., %s (%d steps, raw %s to %s)" % (", ".join(unique[:16]), unique[-1], len(options), rnd(param.min), rnd(param.max))
 
 
 def _normalize(text):
