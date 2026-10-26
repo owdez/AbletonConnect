@@ -177,10 +177,17 @@ async def test_tool_list_matches_bridge_commands(stack):
     async with connect() as client:
         from LiveBridge.dispatch import COMMANDS
 
-        tools = {t.name for t in (await client.list_tools()).tools}
+        listed = (await client.list_tools()).tools
+        tools = {t.name for t in listed}
         local = {"search_samples"}  # answered from the sample index, not by LiveBridge
+        internal = {"ping"}  # health check; hello covers it for the server
         assert len(tools) == 38
-        assert tools - local <= set(COMMANDS)
+        assert tools - local == set(COMMANDS) - internal  # every bridge command has a tool, and only those
+        for t in listed:
+            if t.name.startswith(("delete_", "clear_")):
+                assert t.annotations.destructive_hint is True, t.name
+            if t.name.startswith(("get_", "search_", "browse_")):
+                assert t.annotations.read_only_hint is True, t.name
 
 
 async def test_transport_through_every_layer(stack):

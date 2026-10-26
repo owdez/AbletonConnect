@@ -78,7 +78,10 @@ it changes the set) in `remote_script/LiveBridge/handlers/`, then a matching
 tool in `server/src/abletonconnect/server.py` with `mutating=` set correctly.
 Handlers that need more than one tick are generators (see `dispatch.py`).
 `search_samples` is the exception: the server answers it from the sample
-index and never talks to LiveBridge.
+index and never talks to LiveBridge. `test_tool_list_matches_bridge_commands`
+fails until every bridge command except `ping` has a tool, and checks that
+`delete_*`/`clear_*` tools are marked destructive and `get_*`/`search_*`
+read-only.
 
 ## Sample index (Phase 2)
 

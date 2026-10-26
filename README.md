@@ -212,7 +212,9 @@ and the MCP server read it; Live needs a restart to pick up a port change:
   settings, like Drift's Voice Mode, have no parameter.
 - `get_meters` reads Live's peak meters. It isn't RMS or LUFS; the Phase 3
   analyzer plugin will measure those.
-- Rack chains' own volume, pan and sends can't be set yet.
+- Devices inside racks and Drum Rack pads are reachable by `device_path`, and
+  rack macros take their target's units (`"150 Hz"`), but rack chains' own
+  volume, pan and sends can't be set yet.
 - Browser search walks Live's browser by name and stops after ~15 s on huge
   folders. Use `search_samples` for sample folders.
 - The sample index needs a manual rescan after you add samples.
