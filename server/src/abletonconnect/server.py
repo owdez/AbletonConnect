@@ -20,6 +20,7 @@ from sampleindex import config as sample_config
 from sampleindex import search as sample_search
 
 from .client import LiveClient, LiveError
+from .plugins import index as plugin_index
 
 INSTRUCTIONS = """\
 Controls the Ableton Live set that's open on this Mac.
@@ -59,13 +60,16 @@ def dumps(obj: Any) -> str:
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
 
 
-async def call(cmd: str, args: dict[str, Any] | None = None, *, mutating: bool, timeout: float | None = None) -> str:
+async def request(cmd: str, args: dict[str, Any] | None = None, *, mutating: bool, timeout: float | None = None) -> Any:
     clean = {k: v for k, v in (args or {}).items() if v is not None}
     try:
-        result = await live.request(cmd, clean, mutating=mutating, timeout=timeout)
+        return await live.request(cmd, clean, mutating=mutating, timeout=timeout)
     except LiveError as e:
         raise ToolError(str(e)) from e
-    return dumps(result)
+
+
+async def call(cmd: str, args: dict[str, Any] | None = None, *, mutating: bool, timeout: float | None = None) -> str:
+    return dumps(await request(cmd, args, mutating=mutating, timeout=timeout))
 
 
 def _track(track_index: int | None, track_type: str) -> dict[str, Any]:
@@ -89,8 +93,9 @@ async def get_session_info() -> str:
 async def get_track_info(track_index: TrackIndex = None, track_type: TrackTypeArg = "track") -> str:
     """One track in detail: routing, mixer (volume, pan, sends with return names), devices with
     parameter counts, every Session View clip with its slot index, and its Arrangement clips with
-    start and end bars."""
-    return await call("get_track_info", _track(track_index, track_type), mutating=False)
+    start and end bars. Plugin devices show their format and vendor."""
+    result = await request("get_track_info", _track(track_index, track_type), mutating=False)
+    return dumps(plugin_index.annotate_devices(result, _plugin_entries(required=False)))
 
 
 @mcp.tool(annotations=WRITE, structured_output=False)
@@ -742,6 +747,160 @@ async def arrange_scenes(
         "show": show,
     }
     return await call("arrange_scenes", payload, mutating=True, timeout=60)
+
+
+# ---- plugins (the index abletonconnect-scan-plugins writes, plus the user's plugin_roles.yaml) ------
+
+_index_cache: dict[str, Any] = {}
+
+
+def _plugin_entries(required: bool = True) -> list[dict[str, Any]]:
+    """The plugin index with the user's roles, re-read when either file changes."""
+    paths = (plugin_index.index_path(), plugin_index.roles_path())
+    stamp = tuple(p.stat().st_mtime if p.exists() else None for p in paths)
+    if _index_cache.get("stamp") != stamp or _index_cache.get("paths") != paths:
+        try:
+            entries = plugin_index.read(*paths)["plugins"]
+        except FileNotFoundError:
+            entries = None
+        except ValueError as e:
+            raise ToolError(str(e)) from e
+        _index_cache.update(stamp=stamp, paths=paths, entries=entries)
+    entries = _index_cache["entries"]
+    if entries is None and required:
+        raise ToolError(
+            "There's no plugin index yet. Run `uv run --project server abletonconnect-scan-plugins` "
+            "in the AbletonConnect folder with Live open on an empty set."
+        )
+    return entries or []
+
+
+def _plugin(name: str) -> dict[str, Any]:
+    try:
+        return plugin_index.find(_plugin_entries(), name)
+    except LookupError as e:
+        raise ToolError(str(e)) from e
+
+
+PluginKind = Literal["instrument", "effect", "midi_effect"]
+PluginFormat = Literal["VST3", "AU", "VST2"]
+
+
+@mcp.tool(annotations=READ, structured_output=False)
+async def list_plugins(
+    kind: Annotated[PluginKind | None, Field(description="instrument, effect or midi_effect.")] = None,
+    vendor: Annotated[str | None, Field(description="Part of the vendor name, e.g. 'UAD' or 'iZotope'.")] = None,
+    role: Annotated[
+        str | None, Field(description="A role from the user's plugin_roles.yaml: 'drums', 'eq', 'delay', 'synth'...")
+    ] = None,
+    text: Annotated[str | None, Field(description="Words matched against names, vendors, tags and notes.")] = None,
+    loadable_only: Annotated[bool, Field(description="Only plugins Live can load right now.")] = False,
+) -> str:
+    """The user's installed plugins (VST3, AU, VST2) from the local plugin index, with the role,
+    tags and notes they gave each one. Prefer these over Live's stock devices when they fit the
+    job. role_draft means the role is a guess the user hasn't confirmed. needs_attention says why
+    a plugin couldn't be checked in Live (for example it wants activating)."""
+    entries = plugin_index.filter_entries(
+        _plugin_entries(), kind=kind, vendor=vendor, role=role, text=text, loadable_only=loadable_only
+    )
+    return dumps({"count": len(entries), "plugins": [plugin_index.summary(e) for e in entries]})
+
+
+@mcp.tool(annotations=READ, structured_output=False)
+async def get_plugin_info(
+    name: Annotated[str, Field(description="The plugin's name, or a unique part of it.")],
+    parameter_filter: Annotated[str | None, Field(description="Only parameters whose name contains this.")] = None,
+    limit: Annotated[int, Field(ge=1, le=2048, description="Most parameters to list.")] = 300,
+) -> str:
+    """Everything the index knows about one plugin: vendor, version, kind, formats and their paths,
+    which format Live loads, the user's role and notes, and the parameters (name, range, default,
+    what Live displays at each end) and programs captured by loading it in Live."""
+    entry = dict(_plugin(name))
+    params = entry.pop("parameters", None)
+    if params is not None:
+        if parameter_filter:
+            params = [p for p in params if parameter_filter.lower() in p["name"].lower()]
+        entry["parameters"] = params[:limit]
+        if len(params) > limit:
+            entry["parameters_truncated"] = len(params)
+    return dumps(entry)
+
+
+@mcp.tool(annotations=WRITE, structured_output=False)
+async def load_plugin(
+    name: Annotated[str, Field(description="The plugin's name, or a unique part of it, as list_plugins shows.")],
+    track_index: TrackIndex = None,
+    track_type: TrackTypeArg = "track",
+    format: Annotated[
+        PluginFormat | None, Field(description="Prefer this format. Default: VST3, then AU, then VST2.")
+    ] = None,
+) -> str:
+    """Load one of the user's plugins onto a track by name, resolved to the right place in Live's
+    browser. Like load_browser_item: an instrument replaces the track's instrument, an effect is
+    added to the chain, and the selection and record arms are left as they were."""
+    entry = _plugin(name)
+    if not entry.get("loadable"):
+        reasons = "; ".join(f"{f}: {why}" for f, why in (entry.get("missing") or {}).items())
+        raise ToolError(f"Live can't load {entry['name']}. {reasons or 'Run abletonconnect-scan-plugins again.'}")
+    path = entry["load_path"]
+    if format is not None:
+        listed = (entry.get("live") or {}).get(format)
+        if not listed:
+            why = (entry.get("missing") or {}).get(format) or f"it isn't installed as {format}"
+            raise ToolError(f"Live can't load {entry['name']} as {format}: {why} It has {', '.join(entry['live'])}.")
+        path = listed[0]
+    args = _track(track_index, track_type)
+    args["path"] = path
+    result = await request("load_browser_item", args, mutating=True, timeout=30)
+    result = plugin_index.annotate_devices(result, _plugin_entries(required=False))
+    result["plugin"] = plugin_index.summary(entry)
+    if entry.get("needs_attention"):
+        result["note"] = f"The plugin scan flagged it: {entry['needs_attention']}"
+    return dumps(result)
+
+
+ProgramArg = Annotated[int | str, Field(description="Program index, or its name (or a unique part of it).")]
+
+
+@mcp.tool(annotations=READ, structured_output=False)
+async def get_plugin_programs(
+    track_index: TrackIndex = None,
+    device_index: DeviceIndexArg = None,
+    device_path: DevicePathArg = None,
+    track_type: TrackTypeArg = "track",
+    offset: Annotated[int, Field(ge=0)] = 0,
+    limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+) -> str:
+    """A loaded plugin's programs: the factory presets it offers Live, and which one is selected.
+    Many VST3 plugins keep their presets in their own browser and offer only 'Default' here."""
+    args = _device(track_index, track_type, device_index, device_path)
+    args.update(offset=offset, limit=limit)
+    return dumps(_annotate_plugin(await request("get_plugin_programs", args, mutating=False)))
+
+
+@mcp.tool(annotations=WRITE, structured_output=False)
+async def set_plugin_program(
+    program: ProgramArg,
+    track_index: TrackIndex = None,
+    device_index: DeviceIndexArg = None,
+    device_path: DevicePathArg = None,
+    track_type: TrackTypeArg = "track",
+) -> str:
+    """Switch a loaded plugin to one of its programs (one undo step). Live can't load a plugin's
+    own preset files; for a saved sound, use a kit (a rack saved with the plugin in it)."""
+    args = _device(track_index, track_type, device_index, device_path)
+    args["program"] = program
+    return dumps(_annotate_plugin(await request("set_plugin_program", args, mutating=True)))
+
+
+def _annotate_plugin(result: dict[str, Any]) -> dict[str, Any]:
+    """The exact format and vendor of the plugin a program result is about."""
+    device = {"name": result.get("device", ""), "plugin": result.get("plugin")}
+    plugin_index.annotate_devices({"devices": [device]}, _plugin_entries(required=False))
+    result["plugin"] = device["plugin"]
+    if "vendor" in device:
+        result["vendor"] = device["vendor"]
+    return result
 
 
 # ---- sample library (local index, no Live round trip) ----------------------------------------------

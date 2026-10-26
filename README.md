@@ -15,7 +15,7 @@ no telemetry and no outbound network traffic.
 
 ## What Claude can do
 
-38 tools, each returning compact JSON with the state after the change:
+43 tools, each returning compact JSON with the state after the change:
 
 | Area | Tools |
 |---|---|
@@ -29,6 +29,7 @@ no telemetry and no outbound network traffic.
 | Metering | `get_meters` (peak and average level per track, return and master in dBFS, from Live's own meters while the set plays) |
 | Browser | `browse_browser`, `search_browser`, `load_browser_item` (devices, plugins, presets, samples, user folders; leaves the selected track and every track's record arm as they were) |
 | Sample library | `search_samples` (your sample folders by name, loop or one-shot, BPM, key, root note, brightness and length; instant, from a local index) |
+| Your plugins | `list_plugins` (by kind, vendor, your role, text), `get_plugin_info` (formats, which one Live loads, parameters with their ranges, programs, your notes), `load_plugin` (by name), `get_plugin_programs`, `set_plugin_program` |
 
 Every change is a single Live undo step, so `undo` (or Cmd+Z) reverts exactly
 one tool call.
@@ -173,6 +174,47 @@ What the index knows about each file:
 | Root note (one-shots) | Pitch detection on tonal sounds like 808s, toms and vocal notes, named the way Live names notes (C3 = MIDI 60). Noisy sounds (hats, claps) get none. |
 | Brightness | Spectral centroid. "dark" and "bright" pick the darkest or brightest third of the other matches. |
 | Tags | Drum names and abbreviations, so "kick" finds `BD0010.wav`. |
+
+## Your plugins
+
+Claude works better with your own plugins than with generic stock devices, so
+AbletonConnect keeps an index of them: `~/.config/abletonconnect/plugins.json`,
+which stays on your machine and out of the repo. Build it with Live open on a
+new, empty set:
+
+```bash
+uv run --project server abletonconnect-scan-plugins
+```
+
+The scanner reads every VST3 (`moduleinfo.json`, else `Info.plist`), VST2 and
+Audio Unit (`auval -a`, Apple's own skipped) under `/Library/Audio/Plug-Ins` and
+`~/Library/Audio/Plug-Ins`, and merges the formats of each plugin into one entry,
+noting duplicate installs. It then asks Live which of them it lists, records
+the browser path for each format and, for anything Live doesn't list, the
+likely reason (for example Audio Units switched off in Live's Settings >
+Plug-Ins). Finally it loads each plugin on a scratch track, one at a time,
+records its parameters (names, ranges, defaults, display text at each end) and
+programs, and deletes the track. A plugin that hangs, wants activating, opens a
+consent dialog or exposes no parameters is marked `needs_attention` with the
+reason; the scanner never clicks anything in a plugin's windows. A rescan only
+loads new or updated plugins (`--force` loads them all, `--only NAME` just
+those, `--no-live` reads the disk only).
+
+Your own notes go in `~/.config/abletonconnect/plugin_roles.yaml`, which the
+scanner never changes once it exists. The first scan writes a draft with a
+guessed role for each plugin, marked `draft: true`; confirm or fix each one and
+delete its `draft` line:
+
+```yaml
+UADx 1176 FET Compressor:
+  role: compressor
+  tags: [fet, fast, vocals, drums]
+  notes: Fast FET compression on vocals, drums and bass.
+```
+
+`list_plugins` and `get_plugin_info` merge these in, and `load_plugin` loads a
+plugin by name. Live's API can't load a plugin's own preset files; to reuse a
+sound, save it in a rack (see Claude Kits).
 
 ## Configuration
 

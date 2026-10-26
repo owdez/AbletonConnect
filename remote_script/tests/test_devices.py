@@ -192,6 +192,31 @@ def test_browser_lists_plugins_with_their_format_uri(d):
     assert "uri" not in result(d, "browse_browser", path="audio_effects")["items"][0]
 
 
+def test_plugin_devices_say_they_are_plugins_and_list_programs(d, live):
+    song, _ = live
+    loaded = result(d, "load_browser_item", path="plugins/Xfer Records/Serum 2", track_index=0)
+    assert loaded["devices"][0]["plugin"] == "VST" and loaded["devices"][0]["class"] == "PluginDevice"
+    out = result(d, "get_plugin_programs", track_index=0, device_index=0)
+    assert out["count"] == 4 and out["selected"] == {"index": 0, "name": "Init"}
+    assert [p["name"] for p in out["programs"]] == ["Init", "Bass - Growl", "Lead - Saw Stack", "Pad - Glass"]
+    assert result(d, "get_plugin_programs", track_index=0, device_index=0, offset=1, limit=2)["more"] is True
+
+    steps = song.undo_steps
+    out = result(d, "set_plugin_program", track_index=0, device_index=0, program="lead - saw stack")
+    assert out["selected"] == {"index": 2, "name": "Lead - Saw Stack"} and out["previous"]["name"] == "Init"
+    assert result(d, "set_plugin_program", track_index=0, device_index=0, program="glass")["selected"]["index"] == 3
+    assert result(d, "set_plugin_program", track_index=0, device_index=0, program=1)["selected"]["name"] == "Bass - Growl"
+    assert song.undo_steps == steps + 3
+
+    assert "'a' matches 3 programs" in failure(d, "set_plugin_program", track_index=0, device_index=0, program="a")["message"]
+    assert "No program 'Pluck'" in failure(d, "set_plugin_program", track_index=0, device_index=0, program="Pluck")["message"]
+    assert "4 programs (0-3), no 9" in failure(d, "set_plugin_program", track_index=0, device_index=0, program=9)["message"]
+    song.tracks[1].devices = [fake_live.make_operator()]
+    assert "isn't a plugin" in failure(d, "get_plugin_programs", track_index=1, device_index=0)["message"]
+    song.tracks[1].devices = [fake_live.FakePluginDevice("Bare", programs=())]
+    assert "offers no programs" in failure(d, "set_plugin_program", track_index=1, device_index=0, program=0)["message"]
+
+
 def test_parameter_ranges_in_display_units(d, live):
     song, _ = live
     song.tracks[0].devices = [fake_live.FakePluginDevice("Synth")]

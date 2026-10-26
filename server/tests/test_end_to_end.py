@@ -179,9 +179,9 @@ async def test_tool_list_matches_bridge_commands(stack):
 
         listed = (await client.list_tools()).tools
         tools = {t.name for t in listed}
-        local = {"search_samples"}  # answered from the sample index, not by LiveBridge
+        local = {"search_samples", "list_plugins", "get_plugin_info", "load_plugin"}  # answered by the server
         internal = {"ping"}  # health check; hello covers it for the server
-        assert len(tools) == 38
+        assert len(tools) == 43
         assert tools - local == set(COMMANDS) - internal  # every bridge command has a tool, and only those
         for t in listed:
             if t.name.startswith(("delete_", "clear_")):
@@ -299,3 +299,107 @@ async def test_racks_simpler_and_meters_through_every_layer(stack):
         song.master_track.output_meter_left = song.master_track.output_meter_right = 64 / 76  # -6 dBFS
         meters = await tool(client, "get_meters", duration=2.5)
         assert meters["master"] == {"name": "Master", "peak_db": -6.0, "avg_db": -6.0} and len(meters["tracks"]) == 2
+
+
+@pytest.fixture
+def plugin_files(tmp_path, monkeypatch):
+    """A plugins.json like abletonconnect-scan-plugins writes, and the user's roles, for the fake Live's plugins."""
+
+    def vst3(vendor, name, **extra):
+        path = f"plugins/{vendor}/{name}"
+        entry = {
+            "name": name,
+            "vendor": vendor,
+            "version": "1.0",
+            "formats": {
+                "VST3": [{"format": "VST3", "path": f"/Library/Audio/Plug-Ins/VST3/{name}.vst3", "live_path": path}]
+            },
+            "live": {"VST3": [path]},
+            "loadable": True,
+            "load_path": path,
+        }
+        entry.update(extra)
+        return entry
+
+    plugins = [
+        vst3(
+            "Xfer Records",
+            "Serum 2",
+            kind="instrument",
+            parameters=[{"index": 1, "name": "Cutoff", "min": 0.0, "max": 1.0}, {"index": 2, "name": "Mode"}],
+            parameter_count=2,
+            programs=["Init", "Bass - Growl"],
+        ),
+        vst3("SLVC", "SLVC Dub Echo", kind="effect", categories=["Delay"]),
+        {
+            "name": "Massive X",
+            "vendor": "Native Instruments",
+            "kind": "instrument",
+            "formats": {"AU": [{"path": "/x"}]},
+            "live": {},
+            "loadable": False,
+            "missing": {
+                "AU": "Live lists no AU plugins at all: 'Use Audio Units v2/v3' is probably off in Live's Settings > Plug-Ins."
+            },
+        },
+    ]
+    index_file, roles_file = tmp_path / "plugins.json", tmp_path / "plugin_roles.yaml"
+    index_file.write_text(json.dumps({"version": 1, "plugins": plugins}))
+    roles_file.write_text(
+        "Serum 2: {role: synth, tags: [wavetable], draft: true}\nSLVC Dub Echo:\n  role: delay\n  notes: Throws.\n"
+    )
+    monkeypatch.setenv("ABLETONCONNECT_PLUGIN_INDEX", str(index_file))
+    monkeypatch.setenv("ABLETONCONNECT_PLUGIN_ROLES", str(roles_file))
+    return index_file
+
+
+async def test_plugin_tools_through_every_layer(stack, plugin_files):
+    async with connect() as client:
+        song, _ = stack
+        listed = await tool(client, "list_plugins", kind="instrument")
+        assert [p["name"] for p in listed["plugins"]] == ["Serum 2", "Massive X"]
+        assert listed["plugins"][0] == {
+            "name": "Serum 2",
+            "vendor": "Xfer Records",
+            "kind": "instrument",
+            "role": "synth",
+            "tags": ["wavetable"],
+            "role_draft": True,
+            "formats": ["VST3"],
+            "loadable": True,
+            "parameters": 2,
+            "programs": 2,
+        }
+        assert [p["name"] for p in (await tool(client, "list_plugins", role="delay"))["plugins"]] == ["SLVC Dub Echo"]
+        assert [
+            p["name"] for p in (await tool(client, "list_plugins", kind="instrument", loadable_only=True))["plugins"]
+        ] == ["Serum 2"]
+        info = await tool(client, "get_plugin_info", name="serum", parameter_filter="cut")
+        assert (
+            info["parameters"] == [{"index": 1, "name": "Cutoff", "min": 0.0, "max": 1.0}] and info["role"] == "synth"
+        )
+
+        loaded = await tool(client, "load_plugin", name="Serum 2", track_index=0)
+        device = loaded["devices"][0]
+        assert (device["name"], device["plugin"], device["vendor"]) == ("Serum 2", "VST3", "Xfer Records")
+        assert loaded["plugin"]["name"] == "Serum 2" and loaded["arm"] is False
+        track = await tool(client, "get_track_info", track_index=0)
+        assert track["devices"][0]["vendor"] == "Xfer Records"
+        programs = await tool(client, "get_plugin_programs", track_index=0)
+        assert programs["selected"] == {"index": 0, "name": "Init"} and programs["count"] == 4
+        assert (programs["plugin"], programs["vendor"]) == ("VST3", "Xfer Records")
+        changed = await tool(client, "set_plugin_program", track_index=0, program="growl")
+        assert changed["selected"]["name"] == "Bass - Growl" and changed["previous"]["name"] == "Init"
+
+        out = await tool(client, "load_plugin", name="Massive X", track_index=0)
+        assert "Live can't load Massive X. AU: Live lists no AU plugins" in out["error"]
+        out = await tool(client, "load_plugin", name="Serum 2", track_index=0, format="AU")
+        assert "can't load Serum 2 as AU" in out["error"]
+        assert "No plugin called 'Pigments'" in (await tool(client, "get_plugin_info", name="Pigments"))["error"]
+
+
+async def test_plugin_tools_without_an_index_say_how_to_make_one(stack, tmp_path, monkeypatch):
+    monkeypatch.setenv("ABLETONCONNECT_PLUGIN_INDEX", str(tmp_path / "missing.json"))
+    async with connect() as client:
+        assert "abletonconnect-scan-plugins" in (await tool(client, "list_plugins"))["error"]
+        assert (await tool(client, "get_track_info", track_index=0))["name"] == "1-MIDI"  # still works without one
