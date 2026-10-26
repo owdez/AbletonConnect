@@ -15,7 +15,7 @@ no telemetry and no outbound network traffic.
 
 ## What Claude can do
 
-43 tools, each returning compact JSON with the state after the change:
+45 tools, each returning compact JSON with the state after the change:
 
 | Area | Tools |
 |---|---|
@@ -29,6 +29,7 @@ no telemetry and no outbound network traffic.
 | Metering | `get_meters` (peak and average level per track, return and master in dBFS, from Live's own meters while the set plays) |
 | Browser | `browse_browser`, `search_browser`, `load_browser_item` (devices, plugins, presets, samples, user folders; leaves the selected track and every track's record arm as they were) |
 | Sample library | `search_samples` (your sample folders by name, loop or one-shot, BPM, key, root note, brightness and length; instant, from a local index) |
+| Claude Kits | `list_kits` (your racks by role, tags or text, from `kits.yaml`), `load_kit` (onto a track; returns its macros and what each does) |
 | Your plugins | `list_plugins` (by kind, vendor, your role, text), `get_plugin_info` (formats, which one Live loads, parameters with their ranges, programs, your notes), `load_plugin` (by name), `get_plugin_programs`, `set_plugin_program` |
 
 Every change is a single Live undo step, so `undo` (or Cmd+Z) reverts exactly
@@ -216,6 +217,52 @@ UADx 1176 FET Compressor:
 plugin by name. Live's API can't load a plugin's own preset files; to reuse a
 sound, save it in a rack (see Claude Kits).
 
+## Claude Kits
+
+Kits are racks that hold your sounds and chains: your plugins with your
+settings, and macros with clear names. They're how your sounds get reused,
+because Live's API can't load a plugin's presets or save presets. They live in
+`Claude Kits` in your User Library, one folder per role (Drums, Bass, Synths,
+Pads, FX, Vocal Chains, Mix Bus), described by `Claude Kits/kits.yaml`.
+`list_kits` reads the manifest and checks it against the folder and Live's
+browser; `load_kit` loads a kit onto a track and returns its macros with their
+values and what each does. Two starter kits show the idea, `UAD Lead Chain`
+(610-A, 1176, LA-2A, Pultec EQP-1A) and `SLVC Dub Throw` (SLVC Dub Echo, SLVC
+Reverb); they're marked `starter: true`, so replace them with your own.
+
+### How to add a kit
+
+1. **Build the sound** on a track: your instrument or chain, dialled in the way
+   you like it.
+2. **Rack it.** Click the first device's title bar, Shift-click the last one,
+   and press Cmd+G.
+3. **Name the macros.** Show the rack's macros (the top button on its left
+   edge), unfold each plugin's parameters (the triangle in its title bar),
+   right-click a parameter and choose Map to Macro *n*. Then click each macro's
+   name, press Cmd+R and give it a name that says what it does ("Air", "Echo
+   Time"). Give the rack itself a name the same way. Macros mapped to plugin
+   parameters show 0 to 127 rather than the plugin's units, so say the range in
+   the manifest.
+4. **Save it in the right folder.** Click the rack's Save Preset button and press
+   Return. Live saves it under User Library > Presets; move the `.adg` file into
+   the matching folder of `Claude Kits` (in Finder, or by dragging it in Live's
+   browser).
+5. **Add a manifest entry** to `Claude Kits/kits.yaml`:
+
+   ```yaml
+   kits:
+     Night Drive Bass:
+       file: Bass/Night Drive Bass.adg
+       role: bass
+       tags: [dark, sub, analog]
+       range: F# minor riffs, F#0 to F#2
+       macros:
+         Cutoff: Filter cutoff, closed to open
+         Grit: Drive before the filter
+   ```
+
+   A rack file without an entry still shows up in `list_kits` as `unlisted`.
+
 ## Configuration
 
 `~/.config/abletonconnect/config.json` holds every setting. Both LiveBridge
@@ -237,6 +284,8 @@ and the MCP server read it; Live needs a restart to pick up a port change:
 - `sample_folders` entries are paths, or objects with a `browser` path for a
   folder that sits inside a folder added to Live's browser.
 - `sample_index` defaults to the path above.
+- `kits_folder` overrides where Claude Kits live (default: `Claude Kits` in the
+  User Library Live uses).
 
 ## Security notes
 

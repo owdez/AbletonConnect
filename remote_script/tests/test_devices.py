@@ -224,3 +224,13 @@ def test_parameter_ranges_in_display_units(d, live):
     assert (params["Cutoff"]["min_display"], params["Cutoff"]["max_display"]) == ("20.0 Hz", "20.00 kHz")
     assert "min_display" not in params["Mode"]  # options are listed instead
     assert "min_display" not in result(d, "get_device_parameters", track_index=0)["parameters"][1]
+
+
+def test_macros_on_plugin_parameters_take_numbers(d, live):
+    # Verified in Live 12.4.7: a macro mapped to a plugin parameter shows 0-127, not the plugin's units.
+    song, _ = live
+    song.tracks[1].devices = [fake_live.make_kit_rack()]
+    message = failure(d, "set_device_parameter", track_index=1, parameter="Echo Time", value="1/8")["message"]
+    assert message.startswith("'Echo Time' shows plain numbers from 0 to 127, not units, so it can't take '1/8'.")
+    assert result(d, "set_device_parameter", track_index=1, parameter="Echo Time", value="96")["parameter"]["value"] == 96
+    assert result(d, "set_device_parameter", track_index=1, parameter="Echo Time", value=32)["parameter"]["display"] == "32"

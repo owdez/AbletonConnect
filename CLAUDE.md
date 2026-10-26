@@ -62,7 +62,8 @@ remote_script/LiveBridge/   Remote Script, loaded by Live (Python 3.11, stdlib o
   handlers/                 session, tracks (mixer), clips, envelopes, scenes, arrangement, devices, meters, browser
 remote_script/tests/        pytest on Python 3.11 with a fake Live (fake_live.py)
 server/                     MCP server (uv project)
-  src/abletonconnect/       client.py (bridge client), server.py (MCP tools), config.py
+  src/abletonconnect/       client.py (bridge client), server.py (MCP tools), config.py,
+                            kits.py (Claude Kits: folder, kits.yaml, catalog)
   src/abletonconnect/plugins/  the plugin index: disk.py (bundles, auval), index.py (merge,
                             Live matching, roles), live.py (capture in Live), cli.py
   tests/                    client vs fake socket; end-to-end through the real bridge code
@@ -360,6 +361,27 @@ That file is git-ignored; read it when it exists.
   deleting the track closes it. iZotope RX opens a separate "Analytics Opt-In"
   window on every load. Never click anything in plugin or vendor windows (sign
   in, activate, buy, consent); report them as `needs_attention`.
+
+## Claude Kits (verified in Live 12.4.7)
+
+- A kit is a rack saved in `<User Library>/Claude Kits/<role folder>/`,
+  described by `kits.yaml` there (`kits.py`). The User Library comes from Live's
+  `Library.cfg`; `kits_folder` in config.json or `ABLETONCONNECT_KITS` override
+  it. Live's browser shows the folder as `user_library/Claude Kits/...` as soon
+  as it exists. `list_kits` and `load_kit` are answered by the server, which
+  loads a kit through `load_browser_item`.
+- Live's API can't group devices, map macros or save presets, so kits are built
+  in the UI: Cmd+G groups the selected devices; right-click a parameter, then
+  Map to Macro n; Cmd+R renames a selected macro or rack; the rack's Save Preset
+  button writes `User Library/Presets/Audio Effects/Audio Effect Rack/<name>.adg`
+  and leaves the name editable in the browser (Return keeps it). Plugin
+  parameters must be unfolded (the triangle in the plugin's title bar) to map.
+- The .adg is gzipped XML. Macro names are `MacroDisplayNames.n`; a name equal to
+  the mapped parameter's is stored as the default "Macro n" and comes back as
+  the parameter's name. The plugins' states are inside the file.
+- A macro mapped to a plugin parameter displays 0-127, not the plugin's units
+  (a macro on a native device shows the target's units), so text values can't
+  be resolved; the bridge says to pass a number.
 
 ## Transport, arm and saving (verified in Live 12.4.7)
 

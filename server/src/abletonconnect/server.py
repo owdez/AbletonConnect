@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import sys
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
@@ -19,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sampleindex import config as sample_config
 from sampleindex import search as sample_search
 
+from . import kits as kit_store
 from .client import LiveClient, LiveError
 from .plugins import index as plugin_index
 
@@ -901,6 +903,101 @@ def _annotate_plugin(result: dict[str, Any]) -> dict[str, Any]:
     if "vendor" in device:
         result["vendor"] = device["vendor"]
     return result
+
+
+# ---- Claude Kits (racks with the user's sounds, described by kits.yaml) ---------------------------
+
+
+async def _browser_kit_files() -> list[str] | None:
+    """Kit files Live's browser shows under User Library/Claude Kits, or None when Live can't say."""
+    found: list[str] = []
+
+    async def walk(path: str, parts: list[str], depth: int) -> None:
+        out = await live.request("browse_browser", {"path": path, "limit": 1000}, mutating=False, timeout=20)
+        for item in out["items"]:
+            if item.get("folder") and depth < 4:
+                await walk(item["path"], [*parts, item["name"]], depth + 1)
+            elif item["name"].lower().endswith(kit_store.RACK_SUFFIXES):
+                found.append("/".join([*parts, item["name"]]))
+
+    try:
+        await walk(kit_store.BROWSER_ROOT, [], 0)
+    except LiveError:
+        return None
+    return found
+
+
+def _kits(browser_files: list[str] | None) -> list[dict[str, Any]]:
+    try:
+        return kit_store.catalog(browser_files=browser_files)
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+
+
+@mcp.tool(annotations=READ, structured_output=False)
+async def list_kits(
+    role: Annotated[
+        str | None, Field(description="A role or its folder: drums, bass, synths, pads, fx, vocal chains, mix bus.")
+    ] = None,
+    tags: Annotated[
+        list[str] | None, Field(description="Character tags that must all match, e.g. ['dark', 'warm'].")
+    ] = None,
+    text: Annotated[
+        str | None, Field(description="Words matched against names, roles, notes, tags and macros.")
+    ] = None,
+) -> str:
+    """The user's Claude Kits: racks holding their own sounds and chains, from kits.yaml in the
+    Claude Kits folder of their User Library, checked against what's on disk and in Live's browser.
+    Reach for these before stock devices. Each kit has its role, character tags, key or range
+    notes and what each macro does. starter: true marks a placeholder the user means to replace;
+    unlisted: true is a rack file with no manifest entry yet; problem says why a kit can't load."""
+    browser_files = await _browser_kit_files()
+    found = [k for k in _kits(browser_files) if kit_store.matches(k, role, tags, text)]
+    out: dict[str, Any] = {"folder": str(kit_store.kits_dir()), "count": len(found), "kits": found}
+    if browser_files is None:
+        out["note"] = "Live didn't answer, so whether its browser shows each kit wasn't checked."
+    return dumps(out)
+
+
+@mcp.tool(annotations=WRITE, structured_output=False)
+async def load_kit(
+    name: Annotated[str, Field(description="The kit's name, or a unique part of it, as list_kits shows.")],
+    track_index: TrackIndex = None,
+    track_type: TrackTypeArg = "track",
+) -> str:
+    """Load one of the user's kits onto a track (an instrument kit replaces the track's instrument,
+    an effect or chain kit is added to the end of its devices). Returns the rack's device index and
+    its macros, with their names, values and what the manifest says each does, ready for
+    set_device_parameter."""
+    try:
+        kit = kit_store.find(_kits(await _browser_kit_files()), name)
+    except LookupError as e:
+        raise ToolError(str(e)) from e
+    if "browser_path" not in kit:
+        raise ToolError(f"Kit '{kit['name']}' can't load: {kit.get('problem', 'its file is missing')}")
+    args = _track(track_index, track_type)
+    args["path"] = kit["browser_path"]
+    loaded = await request("load_browser_item", args, mutating=True, timeout=45)
+    stem = Path(kit["file"]).stem
+    racks = [d for d in loaded.get("devices", []) if d["name"] == stem]
+    out: dict[str, Any] = {"kit": kit["name"], "track": loaded.get("track"), "starter": bool(kit.get("starter"))}
+    if not racks:
+        out["devices"] = loaded.get("devices")
+        out["note"] = loaded.get("note") or "Live hasn't shown the rack yet; check get_track_info."
+        return dumps(out)
+    rack = racks[-1]
+    params = await request(
+        "get_device_parameters",
+        {**_track(track_index, track_type), "device_index": rack["index"], "limit": 32},
+        mutating=False,
+    )
+    out["device_index"] = rack["index"]
+    out["macros"] = kit_store.macros(params["parameters"], kit.get("macros"))
+    for key in ("role", "tags", "range"):
+        if kit.get(key):
+            out[key] = kit[key]
+    out["arm"] = loaded.get("arm")
+    return dumps(plugin_index.annotate_devices(out, _plugin_entries(required=False)))
 
 
 # ---- sample library (local index, no Live round trip) ----------------------------------------------

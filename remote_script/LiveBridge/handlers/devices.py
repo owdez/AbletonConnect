@@ -240,6 +240,9 @@ def _value_for_text(param, text):
         close = [(abs(v[0] - wanted[0]), i) for i, v in enumerate(shown) if v is not None and wanted[1] in ("", v[1])]
         if close and min(close)[0] < 0.5:
             return float(param.min) + min(close)[1]
+    if all(option == str(int(param.min) + i) for i, option in enumerate(options)):
+        # Verified in Live 12.4.7: a macro mapped to a plugin parameter shows 0-127, not the plugin's units.
+        raise BridgeError("bad_args", "'%s' shows plain numbers from %s to %s, not units, so it can't take '%s'. Pass a number in that range (a macro mapped to a plugin parameter doesn't show the plugin's units)." % (param.name, options[0], options[-1], text))
     raise BridgeError("bad_args", "'%s' isn't an option for '%s'. Options: %s." % (text, param.name, _list_options(options, param)))
 
 

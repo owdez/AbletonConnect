@@ -179,9 +179,9 @@ async def test_tool_list_matches_bridge_commands(stack):
 
         listed = (await client.list_tools()).tools
         tools = {t.name for t in listed}
-        local = {"search_samples", "list_plugins", "get_plugin_info", "load_plugin"}  # answered by the server
+        local = {"search_samples", "list_plugins", "get_plugin_info", "load_plugin", "list_kits", "load_kit"}
         internal = {"ping"}  # health check; hello covers it for the server
-        assert len(tools) == 43
+        assert len(tools) == 45
         assert tools - local == set(COMMANDS) - internal  # every bridge command has a tool, and only those
         for t in listed:
             if t.name.startswith(("delete_", "clear_")):
@@ -403,3 +403,40 @@ async def test_plugin_tools_without_an_index_say_how_to_make_one(stack, tmp_path
     async with connect() as client:
         assert "abletonconnect-scan-plugins" in (await tool(client, "list_plugins"))["error"]
         assert (await tool(client, "get_track_info", track_index=0))["name"] == "1-MIDI"  # still works without one
+
+
+async def test_kit_tools_through_every_layer(stack, tmp_path, monkeypatch):
+    from abletonconnect import kits
+
+    root = kits.create_folders(tmp_path / "Claude Kits")
+    (root / "FX" / "SLVC Dub Throw.adg").write_bytes(b"\x1f\x8b")
+    (root / "kits.yaml").write_text(
+        "kits:\n  SLVC Dub Throw:\n    file: FX/SLVC Dub Throw.adg\n    role: fx\n    tags: [dub, throw]\n"
+        "    macros: {Echo Time: Synced echo time., Feedback: Echo feedback.}\n    starter: true\n"
+    )
+    monkeypatch.setenv("ABLETONCONNECT_KITS", str(root))
+    async with connect() as client:
+        song, _ = stack
+        listed = await tool(client, "list_kits", role="fx")
+        assert [k["name"] for k in listed["kits"]] == ["SLVC Dub Throw"] and "note" not in listed
+        assert listed["kits"][0]["browser_path"] == "user_library/Claude Kits/FX/SLVC Dub Throw.adg"
+        assert (await tool(client, "list_kits", tags=["vocal"]))["count"] == 0
+
+        loaded = await tool(client, "load_kit", name="dub throw", track_index=1)
+        assert (loaded["kit"], loaded["track"], loaded["device_index"], loaded["starter"]) == (
+            "SLVC Dub Throw",
+            "2-Audio",
+            0,
+            True,
+        )
+        assert loaded["macros"] == [
+            {"index": 1, "name": "Echo Time", "value": 64.0, "display": "64", "does": "Synced echo time."},
+            {"index": 2, "name": "Feedback", "value": 64.0, "display": "64", "does": "Echo feedback."},
+            {"index": 3, "name": "Echo Mix", "value": 64.0, "display": "64"},
+        ]
+        out = await tool(client, "set_device_parameter", track_index=1, parameter="Echo Time", value="1/8")
+        assert "shows plain numbers from 0 to 127" in out["error"]
+        assert "No kit called 'Bass'" in (await tool(client, "load_kit", name="Bass", track_index=1))["error"]
+        (root / "FX" / "SLVC Dub Throw.adg").unlink()
+        out = await tool(client, "load_kit", name="SLVC Dub Throw", track_index=1)
+        assert "can't load" in out["error"] and "isn't in" in out["error"]

@@ -237,6 +237,16 @@ def make_eq_eight():
     )
 
 
+def make_kit_rack():
+    """'SLVC Dub Throw' as saved in Claude Kits: an effect rack whose macros are mapped to plugin
+    parameters, which Live 12.4.7 shows as plain 0-127 numbers."""
+    chain = FakeChain("SLVC Dub Echo | SLVC Reverb", [FakePluginDevice("SLVC Dub Echo", ("Default",), type_="audio_effect"), FakePluginDevice("SLVC Reverb", ("Default",), type_="audio_effect")])
+    rack = FakeRack("SLVC Dub Throw", [chain], class_name="AudioEffectGroupDevice", type_="audio_effect")
+    names = ["Echo Time", "Feedback", "Echo Mix"] + ["Macro %d" % i for i in range(4, 9)]
+    rack.parameters[1:] = [FakeParam(name, 64.0 if i < 3 else 0.0, 0.0, 127.0, display=lambda v: "%d" % round(v)) for i, name in enumerate(names)]
+    return rack
+
+
 def make_pad_rack():
     """Like the 'Dark Corner Pad' preset in Live 12: a macro mapped to one parameter displays that
     parameter's value (str_for_value too), though its own range is 0-127."""
@@ -819,7 +829,8 @@ class FakeBrowser:
             ],
             folder=True,
         )
-        self.user_library = FakeBrowserItem("User Library", [FakeBrowserItem("Presets", [FakeBrowserItem("Lo/Fi Keys.adg", loadable=True)], folder=True)], folder=True)
+        kits = FakeBrowserItem("Claude Kits", [FakeBrowserItem("FX", [FakeBrowserItem("SLVC Dub Throw.adg", loadable=True, factory=make_kit_rack)], folder=True), FakeBrowserItem("Pads", [], folder=True)], folder=True)
+        self.user_library = FakeBrowserItem("User Library", [kits, FakeBrowserItem("Presets", [FakeBrowserItem("Lo/Fi Keys.adg", loadable=True)], folder=True)], folder=True)
         drums = [FakeBrowserItem("Kick %02d.wav" % i, loadable=True) for i in range(250)]
         loops = [FakeBrowserItem("Cymbal Loop.wav", loadable=True, tempo=92.675)]
         # The uri points at a folder that doesn't exist (an unmounted drive) until mount_user_folder().
