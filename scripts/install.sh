@@ -3,7 +3,7 @@
 #
 #   scripts/install.sh            symlink (edits in the repo apply after a Live restart)
 #   scripts/install.sh --copy     copy instead, if Live doesn't load the symlink
-#   scripts/install.sh --check    did Live load it? (reads Log.txt and the port)
+#   scripts/install.sh --check    did Live load it? Is the copy current? (reads Log.txt and the port)
 #   scripts/install.sh --uninstall
 #
 # Live only loads Remote Scripts at startup: restart Live after installing.
@@ -65,8 +65,18 @@ check() {
   echo "Install:  $DEST"
   if [[ -L "$DEST" ]]; then
     echo "          symlink -> $(readlink "$DEST")"
+    if [[ "$(readlink "$DEST")" != "$SRC" ]]; then
+      echo "          WARNING: the link doesn't point at this repo. Run scripts/install.sh again."
+    fi
   elif [[ -d "$DEST" ]]; then
-    echo "          copy"
+    local differ
+    differ="$(diff -rq --exclude=__pycache__ --exclude='*.pyc' "$SRC" "$DEST" 2>/dev/null | wc -l | tr -d ' ' || true)"
+    if [[ "$differ" == 0 ]]; then
+      echo "          copy, same as the repo"
+    else
+      echo "          copy, OUT OF DATE: $differ file(s) differ from the repo."
+      echo "          Run scripts/install.sh --copy and restart Live."
+    fi
   else
     echo "          NOT INSTALLED (run scripts/install.sh)"
   fi

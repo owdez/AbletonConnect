@@ -90,10 +90,13 @@ is wrapped so an error becomes an error response and is logged to Live's
    scripts/install.sh --check
    ```
 
-   This shows the install, LiveBridge's log lines since Live started, and
-   whether the port is open. To exercise every tool against a new, empty Live
-   set, run the smoke test. It adds two "LB smoke" tracks; close the set
-   without saving afterwards.
+   This shows the install (and whether a copy install is older than the repo),
+   LiveBridge's log lines since Live started, and whether the port is open. A
+   Claude session loads the MCP server when it starts, so a session that was
+   already open keeps the old tools until it's restarted.
+
+   To exercise every tool against a new, empty Live set, run the smoke test.
+   It adds two "LB smoke" tracks; close the set without saving afterwards.
 
    ```bash
    uv run --project server python scripts/smoke_test.py

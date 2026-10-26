@@ -358,9 +358,12 @@ That file is git-ignored; read it when it exists.
 - MCP registration (user scope, all projects):
   `claude mcp add --scope user ableton -- "$(which uv)" --directory "<repo>/server" run abletonconnect-mcp`.
   Server-side changes take effect when Claude Code restarts the MCP server.
-  Live doesn't need a restart for those.
+  Live doesn't need a restart for those. A session started before a server
+  change keeps the old tool list: that, not a missing handler, is what a
+  "the bridge has commands the server doesn't expose" report usually means.
 - Debug with Log.txt: `scripts/tail_log.sh` (filters LiveBridge lines) and
-  `scripts/install.sh --check` (install, log lines since Live started, port).
+  `scripts/install.sh --check` (install and whether a copy is older than the
+  repo, log lines since Live started, and the port).
 - Sample index: `uv run --project tools/sampleindex sampleindex scan` (add
   `--force` to re-analyze everything), `sampleindex stats`, and
   `sampleindex search "dark kick" --kind oneshot`.
