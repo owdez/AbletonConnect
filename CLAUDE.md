@@ -332,7 +332,7 @@ That file is git-ignored; read it when it exists.
   Pad's Low Pass Filter, range 0-127), so display-text bisection works on
   macros without knowing the mapping. Unmapped macros show plain numbers.
 
-## Transport and arm (verified in Live 12.4.7)
+## Transport, arm and saving (verified in Live 12.4.7)
 
 - `start_playing()` plays from the start marker (`song.start_time`), not
   from `current_song_time`. So a stopped jump sets both. Setting
@@ -360,6 +360,11 @@ That file is git-ignored; read it when it exists.
   its keyboard unplugged (Input None) it arms nothing.
 - With no audio input device, `track.arm = True` on an audio track is
   silently ignored; `set_track` says so.
+- **No save.** `Song` and `Application` have no save call. The only
+  `save_current_set` in Live's binary belongs to
+  `Live.Licensing.PythonLicensingBridge`, Live's internal licensing interface,
+  which isn't part of the control-surface API: don't use it, and don't fake a
+  save with keystrokes. INSTRUCTIONS tells Claude to remind the user to save.
 
 ## Conventions
 

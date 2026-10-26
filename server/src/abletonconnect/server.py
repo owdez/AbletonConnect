@@ -36,6 +36,8 @@ Controls the Ableton Live set that's open on this Mac.
   one-shot, root note, brightness) instantly. Load a result with load_browser_item(path=<its browser_path>).
 - Transport positions are 1-based bars or beats. To hear or meter one section, start_playback(bar=...) rather than
   playing from bar 1. After firing Session clips, back_to_arrangement hands the tracks back to the timeline.
+- Live's API can't save the set. After you build or change something substantial, remind the user to save in Live
+  (Cmd+S).
 """
 
 TrackType = Literal["track", "return", "master"]

@@ -216,6 +216,8 @@ and the MCP server read it; Live needs a restart to pick up a port change:
   Live turns carried envelopes into track automation, which stays when those
   timeline clips are deleted; undo the layout instead.
 - Tracks, scenes and clips can be deleted; devices can't yet.
+- Live's API has no way to save the set, so Claude reminds you to save
+  (Cmd+S in Live) after building something.
 - Live doesn't record Arrangement loop changes for undo, so `undo` doesn't
   revert `set_arrangement_loop`. The loop can't start past the end of the song.
 - No input, output or sidechain routing yet.
