@@ -180,3 +180,22 @@ def test_meters_need_the_transport_running(d, live, quick):
     out = run_meters(d, lambda t: setattr(song, "is_playing", t < 0.1), duration=2.0)
     assert "stopped after" in out["note"] and out["seconds"] < 1.0
     assert out["tracks"][0] == {"index": 0, "name": "1-MIDI", "audio": False}  # no instrument yet
+
+
+# ---- plugins ------------------------------------------------------------------------------------
+
+
+def test_browser_lists_plugins_with_their_format_uri(d):
+    out = result(d, "browse_browser", path="plugins/Xfer Records")
+    (serum,) = out["items"]
+    assert serum["path"] == "plugins/Xfer Records/Serum 2" and serum["uri"] == "query:Plugins#VST3:Xfer%20Records:Serum%202"
+    assert "uri" not in result(d, "browse_browser", path="audio_effects")["items"][0]
+
+
+def test_parameter_ranges_in_display_units(d, live):
+    song, _ = live
+    song.tracks[0].devices = [fake_live.FakePluginDevice("Synth")]
+    params = {p["name"]: p for p in result(d, "get_device_parameters", track_index=0, ranges=True)["parameters"]}
+    assert (params["Cutoff"]["min_display"], params["Cutoff"]["max_display"]) == ("20.0 Hz", "20.00 kHz")
+    assert "min_display" not in params["Mode"]  # options are listed instead
+    assert "min_display" not in result(d, "get_device_parameters", track_index=0)["parameters"][1]

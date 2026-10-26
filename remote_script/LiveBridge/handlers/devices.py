@@ -25,17 +25,24 @@ from ..protocol import BridgeError
 
 
 @command()
-def get_device_parameters(ctx, track_index=None, device_index=None, device_path=None, track_type="track", name_filter=None, limit=256):
+def get_device_parameters(ctx, track_index=None, device_index=None, device_path=None, track_type="track", name_filter=None, limit=256, ranges=False):
+    """ranges=True adds what Live displays at each parameter's min and max ("10.0 Hz", "22.0 kHz")."""
     track = get_track(ctx.song, track_index, track_type)
     device, path = resolve_device(track, device_index, device_path)
     params = list(device.parameters)
     needle = name_filter.lower() if name_filter else None
     selected = [(i, p) for i, p in enumerate(params) if needle is None or needle in p.name.lower()]
     limit = require_int(limit, "limit")
+    details = []
+    for i, p in selected[:limit]:
+        detail = param_detail(p, i)
+        if ranges and "items" not in detail:
+            detail["min_display"], detail["max_display"] = param_display(p, p.min), param_display(p, p.max)
+        details.append(detail)
     out = {
         "track": track.name,
         "device": _brief(device, device_index, path),
-        "parameters": [param_detail(p, i) for i, p in selected[:limit]],
+        "parameters": details,
     }
     if len(selected) > limit:
         out["truncated"] = True

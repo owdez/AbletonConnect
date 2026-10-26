@@ -1,4 +1,5 @@
-"""Where to find LiveBridge. Shares ~/.config/abletonconnect/config.json with the Remote Script."""
+"""Where to find LiveBridge and the user's files. Shares ~/.config/abletonconnect/config.json with
+the Remote Script."""
 
 import json
 import os
@@ -6,7 +7,8 @@ from pathlib import Path
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 9878
-CONFIG_PATH = Path("~/.config/abletonconnect/config.json").expanduser()
+CONFIG_DIR = Path("~/.config/abletonconnect").expanduser()
+CONFIG_PATH = CONFIG_DIR / "config.json"
 
 
 def resolve_port() -> int:
@@ -21,3 +23,10 @@ def resolve_port() -> int:
     except (OSError, ValueError, AttributeError):
         pass
     return DEFAULT_PORT
+
+
+def config_file(name: str, env: str) -> Path:
+    """A machine-specific file in ~/.config/abletonconnect; the environment variable overrides it
+    (the tests use that)."""
+    override = os.environ.get(env)
+    return Path(override).expanduser() if override else CONFIG_DIR / name

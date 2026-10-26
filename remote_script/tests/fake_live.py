@@ -157,6 +157,28 @@ class FakeSimpler(FakeDevice):
         self._slicing_playback_mode = value
 
 
+class FakePluginDevice(FakeDevice):
+    """Live.PluginDevice: a VST ("PluginDevice") or AU ("AuPluginDevice") with the programs it offers."""
+
+    def __init__(self, name, programs=("Init",), class_name="PluginDevice", type_="instrument"):
+        cutoff = FakeParam("Cutoff", 0.5, 0.0, 1.0, display=freq_display)
+        mode = FakeParam("Mode", 0.0, 0.0, 2.0, quantized=True, items=("Mono", "Poly", "Legato"))
+        super().__init__(name, class_name, type_, [FakeParam("Device On", 1.0, 0.0, 1.0, quantized=True, items=("Off", "On")), cutoff, mode])
+        self.presets = tuple(programs)
+        self._selected = 0
+        self.is_editor_open = True
+
+    @property
+    def selected_preset_index(self):
+        return self._selected
+
+    @selected_preset_index.setter
+    def selected_preset_index(self, index):
+        if not 0 <= index < len(self.presets):
+            raise RuntimeError("Preset index out of range")
+        self._selected = index
+
+
 def make_instrument_rack():
     """An 'Arp'-style preset: a rack whose chain holds a MIDI effect, a synth and an effect rack."""
     fx = FakeRack("Space", [FakeChain("Wet", [FakeDevice("Reverb", type_="audio_effect")])], class_name="AudioEffectGroupDevice", type_="audio_effect")
@@ -769,6 +791,11 @@ class FakeBrowserItem:
         return iter(self._children)
 
 
+def _plugin(name, vendor, type_="instrument", programs=("Init",)):
+    uri = "query:Plugins#VST3:%s:%s" % (urllib.parse.quote(vendor), urllib.parse.quote(name))
+    return FakeBrowserItem(name, loadable=True, uri=uri, factory=lambda: FakePluginDevice(name, programs, type_=type_))
+
+
 def _instrument(name):
     return FakeBrowserItem(name, children=[FakeBrowserItem("%s Preset" % name, loadable=True)], loadable=True, device=True, factory=lambda: make_operator() if name == "Operator" else FakeDevice(name))
 
@@ -783,7 +810,15 @@ class FakeBrowser:
             folder=True,
         )
         self.midi_effects = FakeBrowserItem("MIDI Effects", [FakeBrowserItem("Arpeggiator", loadable=True, device=True)], folder=True)
-        self.plugins = FakeBrowserItem("Plugins", [FakeBrowserItem("VST3", [FakeBrowserItem("Serum 2", loadable=True, device=True)], folder=True)], folder=True)
+        # Live 12.4.7 lists plugins by vendor; the uri says the format.
+        self.plugins = FakeBrowserItem(
+            "Plugins",
+            [
+                FakeBrowserItem("SLVC", [_plugin("SLVC Dub Echo", "SLVC", type_="audio_effect", programs=("Default",)), _plugin("SpectraForm", "SLVC")], folder=True),
+                FakeBrowserItem("Xfer Records", [_plugin("Serum 2", "Xfer Records", programs=("Init", "Bass - Growl", "Lead - Saw Stack", "Pad - Glass"))], folder=True),
+            ],
+            folder=True,
+        )
         self.user_library = FakeBrowserItem("User Library", [FakeBrowserItem("Presets", [FakeBrowserItem("Lo/Fi Keys.adg", loadable=True)], folder=True)], folder=True)
         drums = [FakeBrowserItem("Kick %02d.wav" % i, loadable=True) for i in range(250)]
         loops = [FakeBrowserItem("Cymbal Loop.wav", loadable=True, tempo=92.675)]
