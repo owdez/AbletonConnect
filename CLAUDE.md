@@ -478,8 +478,10 @@ Claude made, ask why and record it with `add_taste_note`.
   change keeps the old tool list: that, not a missing handler, is what a
   "the bridge has commands the server doesn't expose" report usually means.
   The Claude desktop app reads its own config: `scripts/install.sh --desktop`
-  adds the same server there (backing the file up first), and the app needs a
-  restart to load it.
+  adds the same server there (backing the file up first). It refuses while the
+  app runs, because the running app writes its in-memory settings back over the
+  file and dropped an `mcpServers` entry added meanwhile (seen 2026-10-26). So it
+  can't be run from a Claude Code session inside the desktop app.
 - Debug with Log.txt: `scripts/tail_log.sh` (filters LiveBridge lines) and
   `scripts/install.sh --check` (install and whether a copy is older than the
   repo, where Claude Code and the desktop app run the server from, log lines

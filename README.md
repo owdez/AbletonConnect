@@ -88,7 +88,8 @@ is wrapped so an error becomes an error response and is logged to Live's
    claude mcp add --scope user ableton -- "$(which uv)" --directory "$PWD/server" run abletonconnect-mcp
    ```
 
-   For the **Claude desktop app** (its chats, not Claude Code), run:
+   For the **Claude desktop app** (its chats, not Claude Code), quit the app
+   first (Cmd+Q), then run this in Terminal and reopen the app:
 
    ```bash
    scripts/install.sh --desktop
@@ -96,7 +97,9 @@ is wrapped so an error becomes an error response and is logged to Live's
 
    It backs up `~/Library/Application Support/Claude/claude_desktop_config.json`,
    adds an `ableton` server with uv's absolute path (the app doesn't see your
-   shell's `PATH`) and keeps every other entry. Quit and reopen the app to load it.
+   shell's `PATH`) and keeps every other entry. The app has to be closed: while
+   it runs it writes its settings back over that file and drops the new entry,
+   so the script stops if it finds the app open.
 
 5. **Check it:**
 
@@ -410,7 +413,7 @@ that ends in one, since that's easy to break by hand). To move or rename it:
 
 5. Register the MCP server again, in Claude Code (`claude mcp remove --scope
    user ableton`, then the `claude mcp add` command from Install) and in the
-   desktop app (`scripts/install.sh --desktop`).
+   desktop app (`scripts/install.sh --desktop`, with the app still closed).
 6. With a symlink install, run `scripts/install.sh` again and restart Live. A
    copy install doesn't depend on where the repo is.
 7. `scripts/install.sh --check` should show both registrations pointing at the
