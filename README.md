@@ -15,7 +15,7 @@ no telemetry and no outbound network traffic.
 
 ## What Claude can do
 
-35 tools, each returning compact JSON with the state after the change:
+38 tools, each returning compact JSON with the state after the change:
 
 | Area | Tools |
 |---|---|
@@ -24,7 +24,7 @@ no telemetry and no outbound network traffic.
 | Clips & notes | `create_clip`, `add_notes`, `get_clip_notes`, `fire_clip`, `stop_clip`, `set_clip` (rename), `delete_clip` (Session or timeline) |
 | Automation | `set_clip_envelope` (a ramp, curve or breakpoints inside a Session clip for volume, pan, sends or any device parameter, racks included, in what Live displays, like `"200 Hz"` to `"8 kHz"`), `get_clip_envelope`, `clear_clip_envelope` |
 | Scenes & Arrangement | `create_scene`, `set_scene` (name), `delete_scene`, `fire_scene`, `arrange_scenes` (lay scenes out on the timeline as song sections, clip envelopes included) |
-| Transport | `start_playback`, `stop_playback` |
+| Transport | `start_playback` (from the start marker, the start, or any bar or beat), `stop_playback`, `jump_to` (a bar or beat, while playing or stopped), `set_arrangement_loop` (brace position, length, on/off), `back_to_arrangement` (Live's Back to Arrangement button) |
 | Sound design | `get_device_parameters`, `set_device_parameter` (by index or name; what Live displays, like `"120 Hz"`, `"350 ms"` or `"1/4"`, or raw or normalized values), `set_device_property` (Simpler's playback mode: Classic, One-Shot, Slicing). Devices inside Instrument, Effect and Drum Racks are reached with a `device_path`; `get_track_info` lists every rack's chains and the path of each device in them |
 | Metering | `get_meters` (peak and average level per track, return and master in dBFS, from Live's own meters while the set plays) |
 | Browser | `browse_browser`, `search_browser`, `load_browser_item` (devices, plugins, presets, samples, user folders; leaves the selected track and every track's record arm as they were) |
@@ -205,6 +205,8 @@ and the MCP server read it; Live needs a restart to pick up a port change:
   Live turns carried envelopes into track automation, which stays when those
   timeline clips are deleted; undo the layout instead.
 - Tracks, scenes and clips can be deleted; devices can't yet.
+- Live doesn't record Arrangement loop changes for undo, so `undo` doesn't
+  revert `set_arrangement_loop`. The loop can't start past the end of the song.
 - No input, output or sidechain routing yet.
 - Only parameters Live exposes for automation can be set. Some device
   settings, like Drift's Voice Mode, have no parameter.

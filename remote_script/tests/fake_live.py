@@ -593,9 +593,12 @@ class FakeSong:
         self.signature_denominator = 4
         self.is_playing = False
         self.current_song_time = 0.0
+        self.start_time = 0.0  # the start marker: where start_playing plays from
+        self.back_to_arranger = False  # lit while Session clips override the Arrangement
         self.loop = False
-        self.loop_start = 0.0
+        self._loop_start = 0.0
         self.loop_length = 16.0
+        self.song_length = 512.0  # the last event plus some room, as Live reports it
         self.metronome = False
         self.root_note = 0
         self._scale_name = "Major"
@@ -622,6 +625,16 @@ class FakeSong:
             raise RuntimeError("Tempo out of range")
         self._tempo = float(value)
         self.undo_log.append(("tempo", value))
+
+    @property
+    def loop_start(self):
+        return self._loop_start
+
+    @loop_start.setter
+    def loop_start(self, value):
+        if value > self.song_length:
+            raise RuntimeError("Cannot set the Loopstart behind the Songlength")
+        self._loop_start = float(value)
 
     @property
     def scale_name(self):
@@ -690,6 +703,7 @@ class FakeSong:
         self._new_track("audio", index)
 
     def start_playing(self):
+        self.current_song_time = self.start_time
         self.is_playing = True
 
     def stop_playing(self):

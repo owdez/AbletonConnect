@@ -74,6 +74,54 @@ def test_tempo_and_transport(d, live):
     assert result(d, "stop_playback")["playing"] is False
 
 
+def test_jump_and_play_from_a_bar(d, live):
+    song, _ = live
+    out = result(d, "jump_to", bar=25)
+    assert (out["song_time"], out["bar"], out["playing"]) == (96.0, 25.0, False)
+    assert song.start_time == 96.0  # stopped: Play starts from the start marker, so it moves too
+    out = result(d, "start_playback")
+    assert out["playing"] is True and out["bar"] == 25.0
+    out = result(d, "jump_to", beat=8)
+    assert out["song_time"] == 8.0 and out["playing"] is True
+    result(d, "stop_playback")
+    out = result(d, "start_playback", bar=9)
+    assert out["playing"] is True and out["song_time"] == 32.0
+    assert result(d, "start_playback", from_start=True)["song_time"] == 0.0
+    song.signature_numerator, song.signature_denominator = 6, 8
+    assert result(d, "jump_to", bar=3)["song_time"] == 6.0  # 3 quarter notes per bar of 6/8
+    assert "Pass bar" in failure(d, "jump_to")["message"]
+    assert "starts at 1" in failure(d, "jump_to", bar=0)["message"]
+    assert "not both" in failure(d, "jump_to", bar=2, beat=4)["message"]
+    assert "not both" in failure(d, "start_playback", from_start=True, bar=5)["message"]
+    assert "end of Live's timeline" in failure(d, "jump_to", beat=2e6)["message"]
+
+
+def test_arrangement_loop(d, live):
+    song, _ = live
+    out = result(d, "set_arrangement_loop", start_bar=9, length_bars=8, enabled=True)
+    assert out["loop"] == {"on": True, "start_bar": 9.0, "end_bar": 17.0}
+    assert (song.loop_start, song.loop_length, song.loop) == (32.0, 32.0, True)
+    assert song.undo_steps == 0  # Live doesn't record loop changes for undo
+    assert result(d, "set_arrangement_loop", enabled=False)["loop"]["on"] is False
+    out = result(d, "set_arrangement_loop", start_beat=4, length_beats=2)
+    assert out["loop"] == {"on": False, "start_bar": 2.0, "end_bar": 2.5}
+    assert "Nothing to change" in failure(d, "set_arrangement_loop")["message"]
+    assert "longer than 0" in failure(d, "set_arrangement_loop", length_bars=0)["message"]
+    assert "start_bar or start_beat, not both" in failure(d, "set_arrangement_loop", start_bar=2, start_beat=4)["message"]
+    assert "after the end of the song (bar 129)" in failure(d, "set_arrangement_loop", start_bar=200)["message"]
+
+
+def test_back_to_arrangement(d, live):
+    song, _ = live
+    assert "back_to_arrangement" not in result(d, "get_session_info")
+    song.back_to_arranger = True  # a Session clip was launched over the Arrangement
+    assert result(d, "get_session_info")["back_to_arrangement"] is True
+    out = result(d, "back_to_arrangement")
+    assert out["was_overridden"] is True and "back_to_arrangement" not in out
+    assert song.back_to_arranger is False
+    assert result(d, "back_to_arrangement")["was_overridden"] is False
+
+
 def test_undo(d, live):
     song, _ = live
     assert failure(d, "undo")["type"] == "invalid_state"

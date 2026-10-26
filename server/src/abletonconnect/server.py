@@ -34,6 +34,8 @@ Controls the Ableton Live set that's open on this Mac.
 - Find sounds with search_browser or browse_browser, then load_browser_item with the returned path.
 - For samples on disk, use search_samples first: it searches a local index of the sample folders (BPM, key, loop or
   one-shot, root note, brightness) instantly. Load a result with load_browser_item(path=<its browser_path>).
+- Transport positions are 1-based bars or beats. To hear or meter one section, start_playback(bar=...) rather than
+  playing from bar 1. After firing Session clips, back_to_arrangement hands the tracks back to the timeline.
 """
 
 TrackType = Literal["track", "return", "master"]
@@ -106,12 +108,53 @@ async def set_scale(
     return await call("set_scale", {"root": root, "scale": scale}, mutating=True)
 
 
+BarArg = Annotated[
+    float | None,
+    Field(ge=1, description="1-based bar: 1 is the start of the Arrangement, 25.5 is halfway into bar 25."),
+]
+BeatArg = Annotated[float | None, Field(ge=0, description="Beats (quarter notes) from the start of the Arrangement.")]
+
+
 @mcp.tool(annotations=WRITE, structured_output=False)
 async def start_playback(
-    from_start: Annotated[bool, Field(description="Jump to the start of the arrangement first.")] = False,
+    from_start: Annotated[bool, Field(description="Play from the start of the Arrangement.")] = False,
+    bar: BarArg = None,
+    beat: BeatArg = None,
 ) -> str:
-    """Start the transport."""
-    return await call("start_playback", {"from_start": from_start}, mutating=True)
+    """Start the transport, from where Live's start marker is, from the start, or from a bar or
+    beat (e.g. bar=25 to hear or meter one section without playing the song from bar 1)."""
+    return await call("start_playback", {"from_start": from_start or None, "bar": bar, "beat": beat}, mutating=True)
+
+
+@mcp.tool(annotations=WRITE, structured_output=False)
+async def jump_to(bar: BarArg = None, beat: BeatArg = None) -> str:
+    """Move the play position to a bar or beat. While playing, playback carries on from there;
+    stopped, Play will start there. Pass bar or beat."""
+    return await call("jump_to", {"bar": bar, "beat": beat}, mutating=True)
+
+
+@mcp.tool(annotations=WRITE, structured_output=False)
+async def set_arrangement_loop(
+    start_bar: BarArg = None,
+    start_beat: BeatArg = None,
+    length_bars: Annotated[float | None, Field(gt=0, description="Loop length in bars.")] = None,
+    length_beats: Annotated[float | None, Field(gt=0, description="Loop length in beats.")] = None,
+    enabled: Annotated[bool | None, Field(description="Switch the Arrangement loop on or off.")] = None,
+) -> str:
+    """Set the Arrangement loop brace and switch looping on or off, e.g. start_bar=17,
+    length_bars=8, enabled=true to loop the drop. Only what you pass changes. Live doesn't
+    undo loop changes, so `undo` won't revert this."""
+    args = {"start_bar": start_bar, "start_beat": start_beat, "length_bars": length_bars}
+    args.update(length_beats=length_beats, enabled=enabled)
+    return await call("set_arrangement_loop", args, mutating=True)
+
+
+@mcp.tool(annotations=WRITE, structured_output=False)
+async def back_to_arrangement() -> str:
+    """Press Live's Back to Arrangement button: stops the Session clips that took over tracks
+    and those tracks play the Arrangement again. get_session_info shows back_to_arrangement:
+    true while Session clips are overriding the timeline."""
+    return await call("back_to_arrangement", mutating=True)
 
 
 @mcp.tool(annotations=WRITE, structured_output=False)

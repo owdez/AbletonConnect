@@ -37,8 +37,9 @@ read-only .als parser (tools/) that never talks to Live.
    (`set_device_property`) and Live's own output meters (`get_meters`, an
    interim step before Phase 3, not a replacement), then clip envelopes
    (`set_clip_envelope`), which `arrange_scenes` carries onto the timeline.
-   Then `load_browser_item` putting back the selection and record arms it
-   used to change.
+   Then transport (`jump_to`, `start_playback` from a bar,
+   `set_arrangement_loop`, `back_to_arrangement`), and `load_browser_item`
+   putting back the selection and record arms it used to change.
 2. **Sample library index.** Scan the sample folders and analyze each file
    with librosa (BPM, key, brightness, length, one-shot or loop type) into a
    local index, then add a search tool. This runs outside Live. Live's browser
@@ -324,8 +325,19 @@ That file is git-ignored; read it when it exists.
 - MIDI tracks with no instrument have `has_audio_output` False; their
   meters read 0.
 
-## Record arm (verified in Live 12.4.7)
+## Transport and arm (verified in Live 12.4.7)
 
+- `start_playing()` plays from the start marker (`song.start_time`), not
+  from `current_song_time`. So a stopped jump sets both. Setting
+  `current_song_time` while playing jumps at once. `continue_playing()`
+  resumes from the playhead.
+- `song.back_to_arranger` is True while Session clips override the
+  Arrangement (the ▶≡ button next to the Main track's stop button lights).
+  Setting it False stops those clips and the tracks play the timeline again.
+- Loop brace changes (`loop`, `loop_start`, `loop_length`) aren't undo steps.
+  `song.loop` reads back its new value only on the next tick. Setting
+  `loop_start` past `song_length` raises "Cannot set the Loopstart behind the
+  Songlength".
 - **A script load can arm the track.** After the script moved the selection
   and called `browser.load_item`, Live often armed that track (`track.arm`,
   not `implicit_arm`) and disarmed the one it armed on an earlier load. It
