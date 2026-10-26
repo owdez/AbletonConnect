@@ -202,6 +202,40 @@ def make_operator():
     )
 
 
+def make_eq_eight():
+    return FakeDevice(
+        "EQ Eight",
+        type_="audio_effect",
+        parameters=[
+            FakeParam("Device On", 1.0, 0.0, 1.0, quantized=True, items=("Off", "On")),
+            FakeParam("1 Frequency A", 0.3, 0.0, 1.0, display=freq_display),
+            FakeParam("1 Gain A", 0.0, -15.0, 15.0, display=lambda v: "%.2f dB" % v),
+            FakeParam("Dry/Wet", 1.0, 0.0, 1.0, display=lambda v: "%d %%" % round(v * 100)),
+        ],
+    )
+
+
+def make_pad_rack():
+    """Like the 'Dark Corner Pad' preset in Live 12: a macro mapped to one parameter displays that
+    parameter's value (str_for_value too), though its own range is 0-127."""
+
+    def cutoff(v):
+        hz = 683 * (19900 / 683) ** (v / 127)
+        return "%.2f kHz" % (hz / 1000) if hz >= 1000 else "%.0f Hz" % hz
+
+    def balance(v):
+        wet = round(v / 127 * 100)
+        return "%d/%d" % (100 - wet, wet)
+
+    rack = FakeRack("Dark Corner Pad", [FakeChain("Pad", [FakeDevice("Wavetable")])])
+    rack.parameters[1:4] = [
+        FakeParam("Low Pass Filter", 68.0, 0.0, 127.0, display=cutoff),
+        FakeParam("Delay Dry/Wet", 17.0, 0.0, 127.0, display=lambda v: "%d %%" % round(v / 127 * 50)),
+        FakeParam("Reverb Type", 77.0, 0.0, 127.0, display=balance),
+    ]
+    return rack
+
+
 # ---- notes and clips ----------------------------------------------------------------------------
 
 
@@ -467,7 +501,9 @@ class FakeTrack:
         self.color = 0x3366FF
         self._mute = False
         self.solo = False
-        self.arm = False
+        self._arm = False
+        self.implicit_arm = False  # set by auto-arm control surfaces on the selected track
+        self.has_input = True  # an audio track with no input device can't be armed
         self.kind = kind
         self.has_midi_input = kind == "midi"
         self.has_audio_input = kind in ("audio", "return", "master")
@@ -493,6 +529,16 @@ class FakeTrack:
     def has_audio_output(self):
         # A MIDI track only outputs audio once it has an instrument.
         return self.kind != "midi" or any(str(d.type) == "instrument" for d in self.devices)
+
+    @property
+    def arm(self):
+        return self._arm
+
+    @arm.setter
+    def arm(self, value):
+        if self.kind not in ("midi", "audio"):
+            raise RuntimeError("Main and Return Tracks have no 'Arm' state!")
+        self._arm = bool(value) and self.has_input  # Live doesn't raise, it just stays unarmed
 
     @property
     def mute(self):
@@ -581,9 +627,12 @@ class FakeSong:
         self.signature_denominator = 4
         self.is_playing = False
         self.current_song_time = 0.0
+        self.start_time = 0.0  # the start marker: where start_playing plays from
+        self.back_to_arranger = False  # lit while Session clips override the Arrangement
         self.loop = False
-        self.loop_start = 0.0
+        self._loop_start = 0.0
         self.loop_length = 16.0
+        self.song_length = 512.0  # the last event plus some room, as Live reports it
         self.metronome = False
         self.root_note = 0
         self._scale_name = "Major"
@@ -592,6 +641,7 @@ class FakeSong:
         self.tracks = [FakeTrack("1-MIDI", "midi", n_scenes, n_sends=2), FakeTrack("2-Audio", "audio", n_scenes, n_sends=2)]
         self.master_track = FakeTrack("Master", "master")
         self.view = SongView()
+        self.auto_armed = None  # the track browser.load_item last armed
         self.view.selected_track = self.tracks[0]
         self.view.selected_scene = self.scenes[0]
         self.undo_log = []
@@ -609,6 +659,16 @@ class FakeSong:
             raise RuntimeError("Tempo out of range")
         self._tempo = float(value)
         self.undo_log.append(("tempo", value))
+
+    @property
+    def loop_start(self):
+        return self._loop_start
+
+    @loop_start.setter
+    def loop_start(self, value):
+        if value > self.song_length:
+            raise RuntimeError("Cannot set the Loopstart behind the Songlength")
+        self._loop_start = float(value)
 
     @property
     def scale_name(self):
@@ -677,6 +737,7 @@ class FakeSong:
         self._new_track("audio", index)
 
     def start_playing(self):
+        self.current_song_time = self.start_time
         self.is_playing = True
 
     def stop_playing(self):
@@ -752,7 +813,8 @@ class FakeBrowser:
 
     def load_item(self, item):
         # Like Live 12.4.7: the load is an undo step of its own, whatever undo step the script has
-        # open, and the first loop in a set also sets the tempo as a second step.
+        # open, and the first loop in a set also sets the tempo as a second step. An instrument
+        # meant for an audio track lands on a new MIDI track after it, which Live selects.
         self.loaded.append(item.name)
         song = self._song
         song.undo_steps += 1
@@ -767,11 +829,25 @@ class FakeBrowser:
                 if first and item.tempo:
                     song._tempo = item.tempo
                     song.undo_steps += 1
+            self._auto_arm(track)
             return
-        if item.factory:
-            track.devices.append(item.factory())
-        else:
-            track.devices.append(FakeDevice(item.name))
+        device = item.factory() if item.factory else FakeDevice(item.name)
+        if str(device.type) == "instrument" and track in song.tracks and not track.has_midi_input:
+            song.create_midi_track(song.tracks.index(track) + 1)
+            track = song.view.selected_track = song.tracks[song.tracks.index(track) + 1]
+        track.devices.append(device)
+        self._auto_arm(track)
+
+    def _auto_arm(self, track):
+        # Live 12.4.7 often arms the track a script loads onto, unless the user armed a track, and
+        # moves the arm it gave on an earlier load. The fake always does: the worst case.
+        song = self._song
+        if not track.can_be_armed or any(t.arm and t is not song.auto_armed for t in song.tracks):
+            return
+        if song.auto_armed is not None:
+            song.auto_armed.arm = False
+        track.arm = True
+        song.auto_armed = track
 
 
 class AppView:

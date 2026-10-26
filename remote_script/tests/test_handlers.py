@@ -1,5 +1,6 @@
 """Command handlers against the fake Live Object Model."""
 
+import fake_live
 import pytest
 from helpers import call, failure, make_dispatcher, result
 
@@ -72,6 +73,54 @@ def test_tempo_and_transport(d, live):
     assert failure(d, "set_tempo", bpm="fast")["type"] == "bad_args"
     assert result(d, "start_playback")["playing"] is True
     assert result(d, "stop_playback")["playing"] is False
+
+
+def test_jump_and_play_from_a_bar(d, live):
+    song, _ = live
+    out = result(d, "jump_to", bar=25)
+    assert (out["song_time"], out["bar"], out["playing"]) == (96.0, 25.0, False)
+    assert song.start_time == 96.0  # stopped: Play starts from the start marker, so it moves too
+    out = result(d, "start_playback")
+    assert out["playing"] is True and out["bar"] == 25.0
+    out = result(d, "jump_to", beat=8)
+    assert out["song_time"] == 8.0 and out["playing"] is True
+    result(d, "stop_playback")
+    out = result(d, "start_playback", bar=9)
+    assert out["playing"] is True and out["song_time"] == 32.0
+    assert result(d, "start_playback", from_start=True)["song_time"] == 0.0
+    song.signature_numerator, song.signature_denominator = 6, 8
+    assert result(d, "jump_to", bar=3)["song_time"] == 6.0  # 3 quarter notes per bar of 6/8
+    assert "Pass bar" in failure(d, "jump_to")["message"]
+    assert "starts at 1" in failure(d, "jump_to", bar=0)["message"]
+    assert "not both" in failure(d, "jump_to", bar=2, beat=4)["message"]
+    assert "not both" in failure(d, "start_playback", from_start=True, bar=5)["message"]
+    assert "end of Live's timeline" in failure(d, "jump_to", beat=2e6)["message"]
+
+
+def test_arrangement_loop(d, live):
+    song, _ = live
+    out = result(d, "set_arrangement_loop", start_bar=9, length_bars=8, enabled=True)
+    assert out["loop"] == {"on": True, "start_bar": 9.0, "end_bar": 17.0}
+    assert (song.loop_start, song.loop_length, song.loop) == (32.0, 32.0, True)
+    assert song.undo_steps == 0  # Live doesn't record loop changes for undo
+    assert result(d, "set_arrangement_loop", enabled=False)["loop"]["on"] is False
+    out = result(d, "set_arrangement_loop", start_beat=4, length_beats=2)
+    assert out["loop"] == {"on": False, "start_bar": 2.0, "end_bar": 2.5}
+    assert "Nothing to change" in failure(d, "set_arrangement_loop")["message"]
+    assert "longer than 0" in failure(d, "set_arrangement_loop", length_bars=0)["message"]
+    assert "start_bar or start_beat, not both" in failure(d, "set_arrangement_loop", start_bar=2, start_beat=4)["message"]
+    assert "after the end of the song (bar 129)" in failure(d, "set_arrangement_loop", start_bar=200)["message"]
+
+
+def test_back_to_arrangement(d, live):
+    song, _ = live
+    assert "back_to_arrangement" not in result(d, "get_session_info")
+    song.back_to_arranger = True  # a Session clip was launched over the Arrangement
+    assert result(d, "get_session_info")["back_to_arrangement"] is True
+    out = result(d, "back_to_arrangement")
+    assert out["was_overridden"] is True and "back_to_arrangement" not in out
+    assert song.back_to_arranger is False
+    assert result(d, "back_to_arrangement")["was_overridden"] is False
 
 
 def test_undo(d, live):
@@ -240,6 +289,40 @@ def test_stepped_parameters_list_and_take_their_options(operator):
     assert result(d, "set_device_parameter", track_index=0, parameter="Transpose", value="-12")["parameter"]["value"] == -12
 
 
+def test_parameter_values_in_db_percent_and_on_macros(d, live):
+    song, _ = live
+    song.tracks[1].devices = [fake_live.make_eq_eight(), fake_live.make_pad_rack()]
+
+    def shown(device, parameter, value):
+        out = result(d, "set_device_parameter", track_index=1, device_index=device, parameter=parameter, value=value)
+        return out["parameter"]["display"]
+
+    assert shown(0, "1 Gain A", "-6 dB") == "-6.00 dB"
+    assert shown(0, "1 Gain A", "+3.5dB") == "3.50 dB"
+    assert shown(0, "1 Frequency A", "150 Hz") == "150.0 Hz"
+    assert shown(0, "1 Frequency A", "1.2 kHz") == "1.20 kHz"
+    assert shown(0, "Dry/Wet", "40 %") == "40 %"
+    assert shown(0, "Dry/Wet", "25%") == "25 %"
+    # A rack macro shows its target's value, so it takes the target's units.
+    assert shown(1, "Low Pass Filter", "1.2 kHz") == "1.20 kHz"
+    assert shown(1, "Low Pass Filter", "950 Hz") == "950 Hz"
+    assert shown(1, "Delay Dry/Wet", "20 %") == "20 %"
+
+    def error(device, parameter, value):
+        return failure(d, "set_device_parameter", track_index=1, device_index=device, parameter=parameter, value=value)["message"]
+
+    # Unresolvable values say what the parameter's range is.
+    assert error(1, "Low Pass Filter", "150 Hz") == "'150 Hz' is outside 'Low Pass Filter', which goes from 683 Hz to 19.90 kHz (raw 0.0 to 127.0)."
+    assert "different units" in error(1, "Low Pass Filter", "-6 dB") and "683 Hz to 19.90 kHz (raw 0.0 to 127.0)" in error(1, "Low Pass Filter", "-6 dB")
+    assert "-15.00 dB to 15.00 dB (raw -15.0 to 15.0)" in error(0, "1 Gain A", "loud")
+    assert "out of range" in error(0, "1 Gain A", 20) and "-15.00 dB to 15.00 dB" in error(0, "1 Gain A", 20)
+    # Every step of a 0-127 macro is listed short, with its ends and range.
+    message = error(1, "Reverb Type", "20/61")
+    assert message.startswith("'20/61' isn't an option for 'Reverb Type'. Options: 100/0, 99/1, 98/2, 97/3, 96/4,")
+    assert message.endswith(", ..., 0/100 (128 steps, raw 0.0 to 127.0).")
+    assert shown(1, "Reverb Type", "50/50") == "50/50"
+
+
 def test_parse_display():
     from LiveBridge.lom import parse_display
 
@@ -258,7 +341,10 @@ def test_parse_display():
 def test_rename_arm_and_delete_tracks(d, live):
     song, _ = live
     out = result(d, "set_track", track_index=0, name="Kick", arm=True)
-    assert out["name"] == "Kick" and out["arm"] is True
+    assert out["name"] == "Kick" and out["arm"] is True and "note" not in out
+    song.tracks[1].has_input = False  # no audio input device: Live keeps the track unarmed, silently
+    out = result(d, "set_track", track_index=1, arm=True)
+    assert out["arm"] is False and "kept '2-Audio' unarmed" in out["note"]
     assert "can't be armed" in failure(d, "set_track", track_index=0, track_type="return", arm=True)["message"]
     assert "Nothing to change" in failure(d, "set_track", track_index=0)["message"]
     out = result(d, "delete_track", track_index=0)
@@ -342,7 +428,7 @@ def test_load_items(d, live):
     song, app = live
     out = result(d, "load_browser_item", path="audio_effects/Reverb", track_index=1)
     assert out["changed"] is True and out["devices"][-1]["name"] == "Reverb"
-    assert song.view.selected_track is song.tracks[1]
+    assert app.browser.loaded == ["Reverb"] and song.view.selected_track is song.tracks[0]  # selected for the load, then put back
     out = result(d, "load_browser_item", path="user_folders/Samples/Drums/Kick 03.wav", track_index=1, clip_slot_index=2)
     assert out["clip"]["name"] == "Kick 03" and out["clip"]["type"] == "audio"
     assert "clip_slot_index" in failure(d, "load_browser_item", path="user_folders/Samples/Drums/Kick 04.wav", track_index=1)["message"]
@@ -357,7 +443,35 @@ def test_load_reports_no_change(d, live, monkeypatch):
     assert out["changed"] is False and "note" in out
 
 
-LOOP = "user_folders/Samples/Loops/Cymbal Loop.wav"
+def test_load_leaves_selection_and_arm_alone(d, live):
+    # Regression: browser.load_item arms the track it loads onto, so a preset load left a MIDI
+    # track armed and the next vocal take would have recorded over its part too.
+    song, app = live
+    vocals = song.tracks[1]
+    song.view.selected_track = vocals
+    out = result(d, "load_browser_item", path="instruments/Operator", track_index=0)
+    assert out["devices"][0]["name"] == "Operator"
+    assert out["arm"] is False and out["arm_restored"] == ["1-MIDI"] and song.tracks[0].arm is False
+    assert song.view.selected_track is vocals
+    # With a track the user armed, Live arms nothing, and the user's arm stays.
+    vocals.arm = True
+    out = result(d, "load_browser_item", path="audio_effects/Reverb", track_index=0)
+    assert out["arm"] is False and "arm_restored" not in out and vocals.arm is True
+
+
+def test_instrument_on_an_audio_track_goes_to_a_new_unarmed_track(d, live):
+    song, app = live
+    song.create_midi_track()  # "3-MIDI", after the audio track
+    keys = song.tracks[2]
+    out = result(d, "load_browser_item", path="instruments/Operator", track_index=1)
+    assert [t["name"] for t in out["new_tracks"]] == ["4-MIDI"] and out["new_tracks"][0]["index"] == 2
+    assert out["new_tracks"][0]["devices"] == ["Operator"] and out["new_tracks"][0]["arm"] is False
+    assert out["changed"] is True and "new track" in out["note"]
+    assert song.tracks[3] is keys and keys.arm is False and not any(t.arm for t in song.tracks)
+    assert song.view.selected_track is song.tracks[0]
+
+
+LOOP ="user_folders/Samples/Loops/Cymbal Loop.wav"
 
 
 def test_user_folder_sample_into_clip_slot_is_one_undo_step(d, live, tmp_path):
@@ -368,7 +482,7 @@ def test_user_folder_sample_into_clip_slot_is_one_undo_step(d, live, tmp_path):
     assert out["clip"]["name"] == "Cymbal Loop" and out["clip"]["file"] == str(tmp_path / "Samples" / "Loops" / "Cymbal Loop.wav")
     assert "tempo" not in out and song.tempo == 120.0
     assert song.undo_steps == 1 and song.undo_depth == 0 and app.browser.loaded == []
-    assert song.view.selected_track is song.tracks[1]
+    assert song.view.selected_track is song.tracks[0]  # created from the file: no need to select the track
     # A sample onto a MIDI track still goes through the browser (into Simpler).
     out = result(d, "load_browser_item", path="user_folders/Samples/Drums/Kick 01.wav", track_index=0)
     assert out["devices"][0]["name"] == "Simpler" and app.browser.loaded == ["Kick 01.wav"]

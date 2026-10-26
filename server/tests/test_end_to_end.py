@@ -177,10 +177,72 @@ async def test_tool_list_matches_bridge_commands(stack):
     async with connect() as client:
         from LiveBridge.dispatch import COMMANDS
 
-        tools = {t.name for t in (await client.list_tools()).tools}
+        listed = (await client.list_tools()).tools
+        tools = {t.name for t in listed}
         local = {"search_samples"}  # answered from the sample index, not by LiveBridge
-        assert len(tools) == 35
-        assert tools - local <= set(COMMANDS)
+        internal = {"ping"}  # health check; hello covers it for the server
+        assert len(tools) == 38
+        assert tools - local == set(COMMANDS) - internal  # every bridge command has a tool, and only those
+        for t in listed:
+            if t.name.startswith(("delete_", "clear_")):
+                assert t.annotations.destructive_hint is True, t.name
+            if t.name.startswith(("get_", "search_", "browse_")):
+                assert t.annotations.read_only_hint is True, t.name
+
+
+async def test_transport_through_every_layer(stack):
+    async with connect() as client:
+        song, _ = stack
+        out = await tool(client, "jump_to", bar=25)
+        assert (out["song_time"], out["bar"]) == (96.0, 25.0)
+        out = await tool(client, "start_playback")
+        assert out["playing"] is True and out["bar"] == 25.0
+        out = await tool(client, "start_playback", bar=9)
+        assert out["song_time"] == 32.0
+        looped = await tool(client, "set_arrangement_loop", start_bar=17, length_bars=8, enabled=True)
+        assert looped["loop"] == {"on": True, "start_bar": 17.0, "end_bar": 25.0}
+        song.back_to_arranger = True
+        assert (await tool(client, "get_session_info"))["back_to_arrangement"] is True
+        assert (await tool(client, "back_to_arrangement"))["was_overridden"] is True
+        assert "not both" in (await tool(client, "jump_to", bar=2, beat=4))["error"]
+        assert "greater than or equal to 1" in (await tool(client, "jump_to", bar=0))["error"]
+
+
+async def test_transport_tools_are_never_resent(stack, monkeypatch):
+    # The client resends only read-only commands after a reconnect; moving the playhead or the
+    # loop twice, or pressing Back to Arrangement twice, must not happen silently.
+    sent = []
+    request = mcp_server.live.request
+
+    async def spy(cmd, args, *, mutating, timeout=None):
+        sent.append((cmd, mutating))
+        return await request(cmd, args, mutating=mutating, timeout=timeout)
+
+    monkeypatch.setattr(mcp_server.live, "request", spy)
+    async with connect() as client:
+        await tool(client, "jump_to", beat=4)
+        await tool(client, "start_playback", bar=2)
+        await tool(client, "set_arrangement_loop", enabled=True)
+        await tool(client, "back_to_arrangement")
+        await tool(client, "get_session_info")
+    assert sent == [
+        ("jump_to", True),
+        ("start_playback", True),
+        ("set_arrangement_loop", True),
+        ("back_to_arrangement", True),
+        ("get_session_info", False),
+    ]
+
+
+async def test_loading_leaves_arm_and_selection_alone(stack):
+    async with connect() as client:
+        song, _ = stack
+        song.view.selected_track = song.tracks[1]
+        out = await tool(client, "load_browser_item", path="instruments/Operator", track_index=0)
+        assert out["arm"] is False and out["arm_restored"] == ["1-MIDI"]
+        assert song.view.selected_track is song.tracks[1] and not any(t.arm for t in song.tracks)
+        info = await tool(client, "get_session_info")
+        assert info["selected_track"] == {"type": "track", "index": 1}
 
 
 async def test_song_layout_through_every_layer(stack):

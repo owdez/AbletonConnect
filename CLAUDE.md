@@ -37,6 +37,9 @@ read-only .als parser (tools/) that never talks to Live.
    (`set_device_property`) and Live's own output meters (`get_meters`, an
    interim step before Phase 3, not a replacement), then clip envelopes
    (`set_clip_envelope`), which `arrange_scenes` carries onto the timeline.
+   Then transport (`jump_to`, `start_playback` from a bar,
+   `set_arrangement_loop`, `back_to_arrangement`), and `load_browser_item`
+   putting back the selection and record arms it used to change.
 2. **Sample library index.** Scan the sample folders and analyze each file
    with librosa (BPM, key, brightness, length, one-shot or loop type) into a
    local index, then add a search tool. This runs outside Live. Live's browser
@@ -75,7 +78,10 @@ it changes the set) in `remote_script/LiveBridge/handlers/`, then a matching
 tool in `server/src/abletonconnect/server.py` with `mutating=` set correctly.
 Handlers that need more than one tick are generators (see `dispatch.py`).
 `search_samples` is the exception: the server answers it from the sample
-index and never talks to LiveBridge.
+index and never talks to LiveBridge. `test_tool_list_matches_bridge_commands`
+fails until every bridge command except `ping` has a tool, and checks that
+`delete_*`/`clear_*` tools are marked destructive and `get_*`/`search_*`
+read-only.
 
 ## Sample index (Phase 2)
 
@@ -321,6 +327,44 @@ That file is git-ignored; read it when it exists.
   `get_meters` reports the level and adds `"mute": true`.
 - MIDI tracks with no instrument have `has_audio_output` False; their
   meters read 0.
+- A rack macro mapped to one parameter displays that parameter's value, and
+  `str_for_value` on the macro returns it too ("4.15 kHz" on Dark Corner
+  Pad's Low Pass Filter, range 0-127), so display-text bisection works on
+  macros without knowing the mapping. Unmapped macros show plain numbers.
+
+## Transport, arm and saving (verified in Live 12.4.7)
+
+- `start_playing()` plays from the start marker (`song.start_time`), not
+  from `current_song_time`. So a stopped jump sets both. Setting
+  `current_song_time` while playing jumps at once. `continue_playing()`
+  resumes from the playhead.
+- `song.back_to_arranger` is True while Session clips override the
+  Arrangement (the ▶≡ button next to the Main track's stop button lights).
+  Setting it False stops those clips and the tracks play the timeline again.
+- Loop brace changes (`loop`, `loop_start`, `loop_length`) aren't undo steps.
+  `song.loop` reads back its new value only on the next tick. Setting
+  `loop_start` past `song_length` raises "Cannot set the Loopstart behind the
+  Songlength".
+- **A script load can arm the track.** After the script moved the selection
+  and called `browser.load_item`, Live often armed that track (`track.arm`,
+  not `implicit_arm`) and disarmed the one it armed on an earlier load. It
+  didn't when loading onto the already selected track, re-loading onto a
+  track it had armed before, or while the user had any track armed. Clicking
+  a track or loading from Live's own browser arms nothing. An instrument
+  loaded onto an audio track goes onto a new MIDI track, which Live selects
+  and arms. Since the rule isn't predictable, `load_browser_item` restores the
+  selection and every arm after every load, matching tracks by identity (a
+  new track shifts indices).
+- Komplete_Kontrol_A (Control Surface slot 1 here) has Ableton's
+  `AutoArmComponent`, which sets `implicit_arm` on the selected track. With
+  its keyboard unplugged (Input None) it arms nothing.
+- With no audio input device, `track.arm = True` on an audio track is
+  silently ignored; `set_track` says so.
+- **No save.** `Song` and `Application` have no save call. The only
+  `save_current_set` in Live's binary belongs to
+  `Live.Licensing.PythonLicensingBridge`, Live's internal licensing interface,
+  which isn't part of the control-surface API: don't use it, and don't fake a
+  save with keystrokes. INSTRUCTIONS tells Claude to remind the user to save.
 
 ## Conventions
 
@@ -358,9 +402,16 @@ That file is git-ignored; read it when it exists.
 - MCP registration (user scope, all projects):
   `claude mcp add --scope user ableton -- "$(which uv)" --directory "<repo>/server" run abletonconnect-mcp`.
   Server-side changes take effect when Claude Code restarts the MCP server.
-  Live doesn't need a restart for those.
+  Live doesn't need a restart for those. A session started before a server
+  change keeps the old tool list: that, not a missing handler, is what a
+  "the bridge has commands the server doesn't expose" report usually means.
+  The Claude desktop app reads its own config: `scripts/install.sh --desktop`
+  adds the same server there (backing the file up first), and the app needs a
+  restart to load it.
 - Debug with Log.txt: `scripts/tail_log.sh` (filters LiveBridge lines) and
-  `scripts/install.sh --check` (install, log lines since Live started, port).
+  `scripts/install.sh --check` (install and whether a copy is older than the
+  repo, where Claude Code and the desktop app run the server from, log lines
+  since Live started, port, and a warning if the repo path ends in a space).
 - Sample index: `uv run --project tools/sampleindex sampleindex scan` (add
   `--force` to re-analyze everything), `sampleindex stats`, and
   `sampleindex search "dark kick" --kind oneshot`.

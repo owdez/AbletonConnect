@@ -56,7 +56,11 @@ def set_track(ctx, track_index=None, track_type="track", name=None, arm=None):
         if not safe(lambda: track.can_be_armed, False):
             raise BridgeError("invalid_state", "'%s' can't be armed (only audio and MIDI tracks can)." % track.name)
         track.arm = bool(arm)
-    return track_brief(track, track_index if track_type != "master" else None, track_type)
+    out = track_brief(track, track_index if track_type != "master" else None, track_type)
+    if arm and not out.get("arm"):
+        # Verified in Live 12.4.7: with no audio input device, an audio track silently stays unarmed.
+        out["note"] = "Live kept '%s' unarmed. An audio track needs an input: check its Audio From and the input device in Live's Settings > Audio." % track.name
+    return out
 
 
 @command(undo=True)

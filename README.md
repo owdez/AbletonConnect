@@ -15,7 +15,7 @@ no telemetry and no outbound network traffic.
 
 ## What Claude can do
 
-35 tools, each returning compact JSON with the state after the change:
+38 tools, each returning compact JSON with the state after the change:
 
 | Area | Tools |
 |---|---|
@@ -24,10 +24,10 @@ no telemetry and no outbound network traffic.
 | Clips & notes | `create_clip`, `add_notes`, `get_clip_notes`, `fire_clip`, `stop_clip`, `set_clip` (rename), `delete_clip` (Session or timeline) |
 | Automation | `set_clip_envelope` (a ramp, curve or breakpoints inside a Session clip for volume, pan, sends or any device parameter, racks included, in what Live displays, like `"200 Hz"` to `"8 kHz"`), `get_clip_envelope`, `clear_clip_envelope` |
 | Scenes & Arrangement | `create_scene`, `set_scene` (name), `delete_scene`, `fire_scene`, `arrange_scenes` (lay scenes out on the timeline as song sections, clip envelopes included) |
-| Transport | `start_playback`, `stop_playback` |
+| Transport | `start_playback` (from the start marker, the start, or any bar or beat), `stop_playback`, `jump_to` (a bar or beat, while playing or stopped), `set_arrangement_loop` (brace position, length, on/off), `back_to_arrangement` (Live's Back to Arrangement button) |
 | Sound design | `get_device_parameters`, `set_device_parameter` (by index or name; what Live displays, like `"120 Hz"`, `"350 ms"` or `"1/4"`, or raw or normalized values), `set_device_property` (Simpler's playback mode: Classic, One-Shot, Slicing). Devices inside Instrument, Effect and Drum Racks are reached with a `device_path`; `get_track_info` lists every rack's chains and the path of each device in them |
 | Metering | `get_meters` (peak and average level per track, return and master in dBFS, from Live's own meters while the set plays) |
-| Browser | `browse_browser`, `search_browser`, `load_browser_item` (devices, plugins, presets, samples, user folders) |
+| Browser | `browse_browser`, `search_browser`, `load_browser_item` (devices, plugins, presets, samples, user folders; leaves the selected track and every track's record arm as they were) |
 | Sample library | `search_samples` (your sample folders by name, loop or one-shot, BPM, key, root note, brightness and length; instant, from a local index) |
 
 Every change is a single Live undo step, so `undo` (or Cmd+Z) reverts exactly
@@ -84,16 +84,30 @@ is wrapped so an error becomes an error response and is logged to Live's
    claude mcp add --scope user ableton -- "$(which uv)" --directory "$PWD/server" run abletonconnect-mcp
    ```
 
+   For the **Claude desktop app** (its chats, not Claude Code), run:
+
+   ```bash
+   scripts/install.sh --desktop
+   ```
+
+   It backs up `~/Library/Application Support/Claude/claude_desktop_config.json`,
+   adds an `ableton` server with uv's absolute path (the app doesn't see your
+   shell's `PATH`) and keeps every other entry. Quit and reopen the app to load it.
+
 5. **Check it:**
 
    ```bash
    scripts/install.sh --check
    ```
 
-   This shows the install, LiveBridge's log lines since Live started, and
-   whether the port is open. To exercise every tool against a new, empty Live
-   set, run the smoke test. It adds two "LB smoke" tracks; close the set
-   without saving afterwards.
+   This shows the install (and whether a copy install is older than the repo),
+   where Claude Code and the desktop app run the server from, LiveBridge's log
+   lines since Live started, and whether the port is open. A Claude session
+   loads the MCP server when it starts, so a session that was already open
+   keeps the old tools until it's restarted.
+
+   To exercise every tool against a new, empty Live set, run the smoke test.
+   It adds two "LB smoke" tracks; close the set without saving afterwards.
 
    ```bash
    uv run --project server python scripts/smoke_test.py
@@ -202,12 +216,18 @@ and the MCP server read it; Live needs a restart to pick up a port change:
   Live turns carried envelopes into track automation, which stays when those
   timeline clips are deleted; undo the layout instead.
 - Tracks, scenes and clips can be deleted; devices can't yet.
+- Live's API has no way to save the set, so Claude reminds you to save
+  (Cmd+S in Live) after building something.
+- Live doesn't record Arrangement loop changes for undo, so `undo` doesn't
+  revert `set_arrangement_loop`. The loop can't start past the end of the song.
 - No input, output or sidechain routing yet.
 - Only parameters Live exposes for automation can be set. Some device
   settings, like Drift's Voice Mode, have no parameter.
 - `get_meters` reads Live's peak meters. It isn't RMS or LUFS; the Phase 3
   analyzer plugin will measure those.
-- Rack chains' own volume, pan and sends can't be set yet.
+- Devices inside racks and Drum Rack pads are reachable by `device_path`, and
+  rack macros take their target's units (`"150 Hz"`), but rack chains' own
+  volume, pan and sends can't be set yet.
 - Browser search walks Live's browser by name and stops after ~15 s on huge
   folders. Use `search_samples` for sample folders.
 - The sample index needs a manual rescan after you add samples.
@@ -241,6 +261,41 @@ including librosa on generated audio with a known tempo and pitch.
 [CLAUDE.md](CLAUDE.md) covers the architecture, protocol, threading rules and
 the quirks of Live's embedded Python that shaped the design (GIL starvation of
 background threads, `schedule_message` re-entrancy, macOS socket behaviour).
+
+## Moving the repo
+
+The scripts quote every path, so the repo works from any folder, including one
+whose name has spaces (`scripts/install.sh --check` warns about a folder name
+that ends in one, since that's easy to break by hand). To move or rename it:
+
+1. Quit the Claude desktop app and close Claude Code sessions running in the
+   repo, so nothing has files open in it.
+2. Move it, quoting both paths:
+
+   ```bash
+   mv "$HOME/Developer/AbletonConnect " "$HOME/Developer/AbletonConnect"
+   ```
+
+3. From the new folder, reconnect the git worktrees. They live inside the repo,
+   so both ends moved; passing their new paths repairs both directions:
+
+   ```bash
+   git worktree repair .claude/worktrees/*
+   ```
+
+4. Rebuild the uv environments, whose editable installs record the old path:
+
+   ```bash
+   rm -rf server/.venv tools/sampleindex/.venv && uv sync --project server && uv sync --project tools/sampleindex
+   ```
+
+5. Register the MCP server again, in Claude Code (`claude mcp remove --scope
+   user ableton`, then the `claude mcp add` command from Install) and in the
+   desktop app (`scripts/install.sh --desktop`).
+6. With a symlink install, run `scripts/install.sh` again and restart Live. A
+   copy install doesn't depend on where the repo is.
+7. `scripts/install.sh --check` should show both registrations pointing at the
+   new `server` folder.
 
 ## License
 

@@ -231,6 +231,7 @@ async def main() -> int:
         )
         instrument = hits[0]["path"] if hits else None
     if instrument:
+        before = await t.run("get_session_info", mutating=False)
         out = await t.step(
             "load_browser_item instrument",
             t.run("load_browser_item", timeout=20, path=instrument, track_index=midi),
@@ -240,6 +241,15 @@ async def main() -> int:
                 "load_browser_item instrument",
                 out["changed"] and bool(out["devices"]),
                 ", ".join(d["name"] for d in out["devices"]),
+            )
+            after = await t.run("get_session_info", mutating=False)
+            arms = [(tr.get("arm"), tr.get("implicit_arm")) for tr in after["tracks"]]
+            t.check(
+                "load leaves selection and arms",
+                after.get("selected_track") == before.get("selected_track")
+                and arms
+                == [(tr.get("arm"), tr.get("implicit_arm")) for tr in before["tracks"]],
+                f"arm {out.get('arm')}, restored {out.get('arm_restored', [])}",
             )
 
     print("\nDevice parameters")
@@ -380,6 +390,21 @@ async def main() -> int:
             info_now["playing_slot"] == 0,
             f"playing_slot {info_now['playing_slot']}",
         )
+    session = await t.run("get_session_info", mutating=False)
+    t.check(
+        "Session clip overrides the Arrangement",
+        session.get("back_to_arrangement") is True,
+    )
+    out = await t.step("back_to_arrangement", t.run("back_to_arrangement"))
+    if out:
+        info_now = await t.run("get_track_info", mutating=False, track_index=midi)
+        t.check(
+            "back_to_arrangement",
+            out["was_overridden"] is True
+            and "back_to_arrangement" not in out
+            and info_now["playing_slot"] is None,
+            f"playing_slot {info_now['playing_slot']}",
+        )
     out = await t.step("stop_clip", t.run("stop_clip", track_index=midi))
     if out:
         t.check("stop_clip", True, f"playing_slot {out['playing_slot']}")
@@ -394,6 +419,45 @@ async def main() -> int:
     out = await t.step("stop_playback", t.run("stop_playback"))
     if out:
         t.check("stop_playback", out["playing"] is False)
+
+    print("\nTransport positions and the loop")
+    loop_before = (await t.run("get_session_info", mutating=False)).get("loop")
+    out = await t.step("jump_to", t.run("jump_to", bar=3))
+    if out:
+        t.check(
+            "jump_to",
+            out["bar"] == 3.0 and out["playing"] is False,
+            f"bar {out['bar']}",
+        )
+    out = await t.step("start_playback bar", t.run("start_playback", bar=2))
+    if out:
+        t.check(
+            "start_playback bar",
+            out["playing"] is True and 2.0 <= out["bar"] < 2.5,
+            f"bar {out['bar']}",
+        )
+    await t.step("stop_playback", t.run("stop_playback"))
+    out = await t.step(
+        "set_arrangement_loop",
+        t.run("set_arrangement_loop", start_bar=2, length_bars=2, enabled=True),
+    )
+    if out:
+        t.check(
+            "set_arrangement_loop",
+            out["loop"] == {"on": True, "start_bar": 2.0, "end_bar": 4.0},
+            str(out["loop"]),
+        )
+    if loop_before:  # loop changes aren't undo steps, so put it back by hand
+        await t.step(
+            "restore loop",
+            t.run(
+                "set_arrangement_loop",
+                start_bar=loop_before["start_bar"],
+                length_bars=loop_before["end_bar"] - loop_before["start_bar"],
+                enabled=loop_before["on"],
+            ),
+        )
+    await t.step("jump_to start", t.run("jump_to", bar=1))
 
     print("\nClip envelopes")
     ramp = {"start": 0, "end": 4, "from": "-24 dB", "to": "-6 dB", "curve": "ease_in"}
