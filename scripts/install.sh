@@ -73,9 +73,22 @@ find_uv() {
   exit 1
 }
 
+# The Claude desktop app keeps its config in memory and writes the whole file back when it saves
+# its settings, dropping anything added while it runs (seen on 2026-10-26). So edit it only while
+# the app is closed. "is running" checks without launching or scripting the app.
+claude_app_running() {
+  [[ "$(osascript -e 'application id "com.anthropic.claudefordesktop" is running' 2>/dev/null)" == "true" ]]
+}
+
 # Add or replace the "ableton" entry in the Claude desktop app's config, keeping everything else.
 desktop() {
   local uv backup
+  if claude_app_running; then
+    echo "The Claude desktop app is running. It rewrites $DESKTOP_CONFIG" >&2
+    echo "from memory when it saves its settings, which drops an entry added while it's open." >&2
+    echo "Quit the Claude app (Cmd+Q), run scripts/install.sh --desktop again from Terminal, then reopen it." >&2
+    exit 1
+  fi
   uv="$(find_uv)"
   mkdir -p "$(dirname "$DESKTOP_CONFIG")"
   if [[ -f "$DESKTOP_CONFIG" ]]; then
@@ -107,7 +120,7 @@ with open(path, encoding="utf-8") as f:
     json.load(f)
 print("Registered 'ableton' in %s (%d MCP server%s)." % (path, len(servers), "" if len(servers) == 1 else "s"))
 PY
-  echo "Quit and reopen the Claude desktop app to load it."
+  echo "Open the Claude desktop app to load it."
 }
 
 # Where Claude Code (user scope) and the desktop app run the MCP server from.
