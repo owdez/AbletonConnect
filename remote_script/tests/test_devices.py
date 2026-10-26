@@ -180,3 +180,57 @@ def test_meters_need_the_transport_running(d, live, quick):
     out = run_meters(d, lambda t: setattr(song, "is_playing", t < 0.1), duration=2.0)
     assert "stopped after" in out["note"] and out["seconds"] < 1.0
     assert out["tracks"][0] == {"index": 0, "name": "1-MIDI", "audio": False}  # no instrument yet
+
+
+# ---- plugins ------------------------------------------------------------------------------------
+
+
+def test_browser_lists_plugins_with_their_format_uri(d):
+    out = result(d, "browse_browser", path="plugins/Xfer Records")
+    (serum,) = out["items"]
+    assert serum["path"] == "plugins/Xfer Records/Serum 2" and serum["uri"] == "query:Plugins#VST3:Xfer%20Records:Serum%202"
+    assert "uri" not in result(d, "browse_browser", path="audio_effects")["items"][0]
+
+
+def test_plugin_devices_say_they_are_plugins_and_list_programs(d, live):
+    song, _ = live
+    loaded = result(d, "load_browser_item", path="plugins/Xfer Records/Serum 2", track_index=0)
+    assert loaded["devices"][0]["plugin"] == "VST" and loaded["devices"][0]["class"] == "PluginDevice"
+    out = result(d, "get_plugin_programs", track_index=0, device_index=0)
+    assert out["count"] == 4 and out["selected"] == {"index": 0, "name": "Init"}
+    assert [p["name"] for p in out["programs"]] == ["Init", "Bass - Growl", "Lead - Saw Stack", "Pad - Glass"]
+    assert result(d, "get_plugin_programs", track_index=0, device_index=0, offset=1, limit=2)["more"] is True
+
+    steps = song.undo_steps
+    out = result(d, "set_plugin_program", track_index=0, device_index=0, program="lead - saw stack")
+    assert out["selected"] == {"index": 2, "name": "Lead - Saw Stack"} and out["previous"]["name"] == "Init"
+    assert result(d, "set_plugin_program", track_index=0, device_index=0, program="glass")["selected"]["index"] == 3
+    assert result(d, "set_plugin_program", track_index=0, device_index=0, program=1)["selected"]["name"] == "Bass - Growl"
+    assert song.undo_steps == steps + 3
+
+    assert "'a' matches 3 programs" in failure(d, "set_plugin_program", track_index=0, device_index=0, program="a")["message"]
+    assert "No program 'Pluck'" in failure(d, "set_plugin_program", track_index=0, device_index=0, program="Pluck")["message"]
+    assert "4 programs (0-3), no 9" in failure(d, "set_plugin_program", track_index=0, device_index=0, program=9)["message"]
+    song.tracks[1].devices = [fake_live.make_operator()]
+    assert "isn't a plugin" in failure(d, "get_plugin_programs", track_index=1, device_index=0)["message"]
+    song.tracks[1].devices = [fake_live.FakePluginDevice("Bare", programs=())]
+    assert "offers no programs" in failure(d, "set_plugin_program", track_index=1, device_index=0, program=0)["message"]
+
+
+def test_parameter_ranges_in_display_units(d, live):
+    song, _ = live
+    song.tracks[0].devices = [fake_live.FakePluginDevice("Synth")]
+    params = {p["name"]: p for p in result(d, "get_device_parameters", track_index=0, ranges=True)["parameters"]}
+    assert (params["Cutoff"]["min_display"], params["Cutoff"]["max_display"]) == ("20.0 Hz", "20.00 kHz")
+    assert "min_display" not in params["Mode"]  # options are listed instead
+    assert "min_display" not in result(d, "get_device_parameters", track_index=0)["parameters"][1]
+
+
+def test_macros_on_plugin_parameters_take_numbers(d, live):
+    # Verified in Live 12.4.7: a macro mapped to a plugin parameter shows 0-127, not the plugin's units.
+    song, _ = live
+    song.tracks[1].devices = [fake_live.make_kit_rack()]
+    message = failure(d, "set_device_parameter", track_index=1, parameter="Echo Time", value="1/8")["message"]
+    assert message.startswith("'Echo Time' shows plain numbers from 0 to 127, not units, so it can't take '1/8'.")
+    assert result(d, "set_device_parameter", track_index=1, parameter="Echo Time", value="96")["parameter"]["value"] == 96
+    assert result(d, "set_device_parameter", track_index=1, parameter="Echo Time", value=32)["parameter"]["display"] == "32"

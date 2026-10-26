@@ -343,13 +343,22 @@ def device_brief(device, index):
         "active": bool(safe(lambda: device.is_active, True)),
         "parameters": len(device.parameters),
     }
+    if device.class_name in PLUGIN_FORMATS:
+        out["plugin"] = PLUGIN_FORMATS[device.class_name]
     out.update(device_properties(device, headline_only=True))
     _add_chains(out, device, [index], 1)
     return out
 
 
+# Plugin device classes. The LOM doesn't say whether a "PluginDevice" is VST2 or VST3; the server
+# fills that in, and the vendor, from the plugin index.
+PLUGIN_FORMATS = {"PluginDevice": "VST", "AuPluginDevice": "AU"}
+
+
 def nested_device_brief(device, path, depth=1):
     out = {"path": list(path), "name": device.name, "class": device.class_name}
+    if device.class_name in PLUGIN_FORMATS:
+        out["plugin"] = PLUGIN_FORMATS[device.class_name]
     if not safe(lambda: device.is_active, True):
         out["active"] = False
     out.update(device_properties(device, headline_only=True))

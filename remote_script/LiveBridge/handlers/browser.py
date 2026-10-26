@@ -129,6 +129,8 @@ def _entry(item, parts):
     out = {"name": item.name, "path": join_path(parts), "folder": _flag(item, "is_folder"), "loadable": _flag(item, "is_loadable")}
     if _flag(item, "is_device"):
         out["device"] = True
+    if parts[0] == "plugins" and out["loadable"]:
+        out["uri"] = str(getattr(item, "uri", "") or "")  # says which format (VST2, VST3, AU) Live lists
     return out
 
 

@@ -62,7 +62,11 @@ remote_script/LiveBridge/   Remote Script, loaded by Live (Python 3.11, stdlib o
   handlers/                 session, tracks (mixer), clips, envelopes, scenes, arrangement, devices, meters, browser
 remote_script/tests/        pytest on Python 3.11 with a fake Live (fake_live.py)
 server/                     MCP server (uv project)
-  src/abletonconnect/       client.py (bridge client), server.py (MCP tools)
+  src/abletonconnect/       client.py (bridge client), server.py (MCP tools), config.py,
+                            kits.py (Claude Kits: folder, kits.yaml, catalog),
+                            taste.py (the user's taste.md: sections, append-only notes)
+  src/abletonconnect/plugins/  the plugin index: disk.py (bundles, auval), index.py (merge,
+                            Live matching, roles), live.py (capture in Live), cli.py
   tests/                    client vs fake socket; end-to-end through the real bridge code
 analyzer/                   Phase 3: JUCE plugin (not yet)
 tools/sampleindex/          Phase 2: sample indexer (own uv project, Python 3.12)
@@ -71,6 +75,7 @@ tools/sampleindex/          Phase 2: sample indexer (own uv project, Python 3.12
   tests/                    names, config, search and scan (fake analyzer), librosa on generated audio
 tools/                      Phase 4: .als parser (not yet)
 scripts/                    install.sh, tail_log.sh, smoke_test.py
+docs/                       taste.example.md (the taste profile template)
 ```
 
 New commands: add a handler with `@command()` (or `@command(undo=True)` if
@@ -79,7 +84,7 @@ tool in `server/src/abletonconnect/server.py` with `mutating=` set correctly.
 Handlers that need more than one tick are generators (see `dispatch.py`).
 `search_samples` is the exception: the server answers it from the sample
 index and never talks to LiveBridge. `test_tool_list_matches_bridge_commands`
-fails until every bridge command except `ping` has a tool, and checks that
+fails until every bridge command except `ping` has a tool (tools the server answers itself are listed in it), and checks that
 `delete_*`/`clear_*` tools are marked destructive and `get_*`/`search_*`
 read-only.
 
@@ -331,6 +336,73 @@ That file is git-ignored; read it when it exists.
   `str_for_value` on the macro returns it too ("4.15 kHz" on Dark Corner
   Pad's Low Pass Filter, range 0-127), so display-text bisection works on
   macros without knowing the mapping. Unmapped macros show plain numbers.
+
+## Plugins (verified in Live 12.4.7)
+
+- `abletonconnect-scan-plugins` (server/src/abletonconnect/plugins) writes
+  `~/.config/abletonconnect/plugins.json`; `plugin_roles.yaml` next to it is the
+  user's and is only ever read (a draft is written once if it's missing).
+  `list_plugins`, `get_plugin_info` and `load_plugin` are answered by the server
+  from those files; the scan and `load_plugin` reach Live through the bridge.
+- Live's browser lists plugins by vendor folder (`plugins/<vendor>/<name>`). The
+  item's uri says the format: `query:Plugins#VST3:<vendor>:<name>`. Here only
+  VST3 is listed: Settings > Plug-Ins has Audio Units v2/v3 and VST2 off.
+- Device classes: `PluginDevice` (VST2 and VST3 alike) and `AuPluginDevice`.
+  `presets` and `selected_preset_index` are the plugin's programs; every VST3
+  here offers just "Default". `is_editor_open` exists. The server adds the
+  exact format and the vendor to device entries from the index.
+- Two installs with the same VST3 class ID (SpectraForm in /Library and
+  ~/Library, with different vendor strings) appear as two browser entries, but
+  both load the same binary, the ~/Library one. The scan records which install
+  Live mapped (`loaded_install`, from `lsof`).
+- Plugins publish their parameters after loading. Some publish none: Komplete
+  Kontrol while empty, SpectraForm's current build, Ozone while iZotope's
+  analytics opt-in covers it, RC909 Pro without its sample folder; Guitar Rig 7
+  publishes one ("Preset Volume") only once its first-run preset import is done.
+- With Auto-Open Plug-In Windows on, each load opens the plugin's window;
+  deleting the track closes it. iZotope RX opens a separate "Analytics Opt-In"
+  window on every load. Never click anything in plugin or vendor windows (sign
+  in, activate, buy, consent); report them as `needs_attention`.
+
+## The user's sound and taste
+
+The user wants Claude working from their sounds and taste, not stock presets.
+The server INSTRUCTIONS say so: read `get_taste_profile`, `list_kits` and
+`list_plugins` before creating anything; prefer their kits and plugins; ask for a
+seed instead of composing from scratch; when they change or delete something
+Claude made, ask why and record it with `add_taste_note`.
+
+- `~/.config/abletonconnect/taste.md` is the user's file (template:
+  `docs/taste.example.md`). `taste.py` reads it by `##`/`###` section and only
+  ever inserts a dated line at the end of a section; never rewrite or reorder
+  the user's text. "(draft)" marks lines the user hasn't confirmed.
+- Machine-specific files stay out of the repo: plugins.json, plugin_roles.yaml
+  and taste.md in ~/.config/abletonconnect, kits in the User Library.
+- Later phases plug in here: the .als parser can propose taste notes and kit
+  candidates from finished projects, the sample index already feeds the palette
+  through `search_samples`, and the analyzer can check the profile's Mix section.
+  "Extend my idea" workflows start from the seed the INSTRUCTIONS ask for.
+
+## Claude Kits (verified in Live 12.4.7)
+
+- A kit is a rack saved in `<User Library>/Claude Kits/<role folder>/`,
+  described by `kits.yaml` there (`kits.py`). The User Library comes from Live's
+  `Library.cfg`; `kits_folder` in config.json or `ABLETONCONNECT_KITS` override
+  it. Live's browser shows the folder as `user_library/Claude Kits/...` as soon
+  as it exists. `list_kits` and `load_kit` are answered by the server, which
+  loads a kit through `load_browser_item`.
+- Live's API can't group devices, map macros or save presets, so kits are built
+  in the UI: Cmd+G groups the selected devices; right-click a parameter, then
+  Map to Macro n; Cmd+R renames a selected macro or rack; the rack's Save Preset
+  button writes `User Library/Presets/Audio Effects/Audio Effect Rack/<name>.adg`
+  and leaves the name editable in the browser (Return keeps it). Plugin
+  parameters must be unfolded (the triangle in the plugin's title bar) to map.
+- The .adg is gzipped XML. Macro names are `MacroDisplayNames.n`; a name equal to
+  the mapped parameter's is stored as the default "Macro n" and comes back as
+  the parameter's name. The plugins' states are inside the file.
+- A macro mapped to a plugin parameter displays 0-127, not the plugin's units
+  (a macro on a native device shows the target's units), so text values can't
+  be resolved; the bridge says to pass a number.
 
 ## Transport, arm and saving (verified in Live 12.4.7)
 

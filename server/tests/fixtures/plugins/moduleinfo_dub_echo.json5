@@ -1,0 +1,48 @@
+{
+  "Name": "SLVC Dub Echo",
+  "Version": "0.1.0",
+  "Factory Info": {
+    "Vendor": "SLVC",
+    "URL": "",
+    "E-Mail": "",
+    "Flags": {
+      "Unicode": true,
+      "Classes Discardable": false,
+      "Component Non Discardable": false,
+    },
+  },
+  "Classes": [
+    {
+      "CID": "ABCDEF019182FAEB534C566353444531",
+      "Category": "Audio Module Class",
+      "Name": "SLVC Dub Echo",
+      "Vendor": "SLVC",
+      "Version": "0.1.0",
+      "SDKVersion": "VST 3.8.0",
+      "Sub Categories": [
+        "Fx",
+        "Delay",
+      ],
+      "Class Flags": 0,
+      "Cardinality": 2147483647,
+      "Snapshots": [
+      ],
+    },
+    {
+      "CID": "ABCDEF011234ABCD534C566353444531",
+      "Category": "Component Controller Class",
+      "Name": "SLVC Dub Echo",
+      "Vendor": "SLVC",
+      "Version": "0.1.0",
+      "SDKVersion": "VST 3.8.0",
+      "Sub Categories": [
+        "Fx",
+        "Delay",
+      ],
+      "Class Flags": 0,
+      "Cardinality": 2147483647,
+      "Snapshots": [
+      ],
+    },
+  ],
+}

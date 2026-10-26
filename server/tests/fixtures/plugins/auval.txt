@@ -1,0 +1,18 @@
+
+    AU Validation Tool
+    Version: 1.10.0 
+    Copyright 2003-2019, Apple Inc. All Rights Reserved.
+    Specify -h (-help) for command options
+aufx Ni$T -NI-  -  Native Instruments: Guitar Rig 7 FX
+aufx SDE1 SLVc  -  SLVC: SLVC Dub Echo
+aufx U3DY UADx  -  Universal Audio (UADx): UADx 1176 FET Compressor
+              Timers:
+                       General@info
+                        Errors@warn
+                       Sockets@warn
+aufx bpas appl  -  Apple: AUBandpass
+aufx dcmp appl  -  Apple: AUDynamicsProcessor
+aufx rZK0 iZtp  -  iZotope: RX 10 De-click
+aumf Ni$T -NI-  -  Native Instruments: Guitar Rig 7 MFX
+aumu NiKK -NI-  -  Native Instruments: Komplete Kontrol[2026-10-26 14:25:06.217] [komplete_kontrol.default] [trace] [:102] qt.message: debug
+aumu SPF1 SLVc  -  SLVC: SpectraForm
