@@ -180,8 +180,9 @@ async def test_tool_list_matches_bridge_commands(stack):
         listed = (await client.list_tools()).tools
         tools = {t.name for t in listed}
         local = {"search_samples", "list_plugins", "get_plugin_info", "load_plugin", "list_kits", "load_kit"}
+        local |= {"get_taste_profile", "add_taste_note"}  # answered by the server, not by LiveBridge
         internal = {"ping"}  # health check; hello covers it for the server
-        assert len(tools) == 45
+        assert len(tools) == 47
         assert tools - local == set(COMMANDS) - internal  # every bridge command has a tool, and only those
         for t in listed:
             if t.name.startswith(("delete_", "clear_")):
@@ -440,3 +441,22 @@ async def test_kit_tools_through_every_layer(stack, tmp_path, monkeypatch):
         (root / "FX" / "SLVC Dub Throw.adg").unlink()
         out = await tool(client, "load_kit", name="SLVC Dub Throw", track_index=1)
         assert "can't load" in out["error"] and "isn't in" in out["error"]
+
+
+async def test_taste_tools_through_every_layer(stack, tmp_path, monkeypatch):
+    profile = tmp_path / "taste.md"
+    template = Path(__file__).resolve().parents[2] / "docs" / "taste.example.md"
+    profile.write_text(template.read_text())
+    monkeypatch.setenv("ABLETONCONNECT_TASTE", str(profile))
+    async with connect() as client:
+        whole = await tool(client, "get_taste_profile")
+        assert "Feedback log" in whole["sections"] and whole["text"] == template.read_text()
+        defaults = await tool(client, "get_taste_profile", section="defaults")
+        assert defaults["section"] == "Defaults" and "Tempo" in defaults["text"]
+        added = await tool(client, "add_taste_note", note="Rejected the bass: too busy.")
+        assert added["section"] == "Feedback log" and added["added"].endswith(": Rejected the bass: too busy.")
+        assert profile.read_text().startswith(template.read_text().rstrip("\n"))  # the template's text is untouched
+        assert "No section 'Tone'" in (await tool(client, "add_taste_note", note="x", section="Tone"))["error"]
+    monkeypatch.setenv("ABLETONCONNECT_TASTE", str(tmp_path / "none.md"))
+    async with connect() as client:
+        assert "docs/taste.example.md" in (await tool(client, "get_taste_profile"))["error"]

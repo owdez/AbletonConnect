@@ -63,7 +63,8 @@ remote_script/LiveBridge/   Remote Script, loaded by Live (Python 3.11, stdlib o
 remote_script/tests/        pytest on Python 3.11 with a fake Live (fake_live.py)
 server/                     MCP server (uv project)
   src/abletonconnect/       client.py (bridge client), server.py (MCP tools), config.py,
-                            kits.py (Claude Kits: folder, kits.yaml, catalog)
+                            kits.py (Claude Kits: folder, kits.yaml, catalog),
+                            taste.py (the user's taste.md: sections, append-only notes)
   src/abletonconnect/plugins/  the plugin index: disk.py (bundles, auval), index.py (merge,
                             Live matching, roles), live.py (capture in Live), cli.py
   tests/                    client vs fake socket; end-to-end through the real bridge code
@@ -74,6 +75,7 @@ tools/sampleindex/          Phase 2: sample indexer (own uv project, Python 3.12
   tests/                    names, config, search and scan (fake analyzer), librosa on generated audio
 tools/                      Phase 4: .als parser (not yet)
 scripts/                    install.sh, tail_log.sh, smoke_test.py
+docs/                       taste.example.md (the taste profile template)
 ```
 
 New commands: add a handler with `@command()` (or `@command(undo=True)` if
@@ -361,6 +363,25 @@ That file is git-ignored; read it when it exists.
   deleting the track closes it. iZotope RX opens a separate "Analytics Opt-In"
   window on every load. Never click anything in plugin or vendor windows (sign
   in, activate, buy, consent); report them as `needs_attention`.
+
+## The user's sound and taste
+
+The user wants Claude working from their sounds and taste, not stock presets.
+The server INSTRUCTIONS say so: read `get_taste_profile`, `list_kits` and
+`list_plugins` before creating anything; prefer their kits and plugins; ask for a
+seed instead of composing from scratch; when they change or delete something
+Claude made, ask why and record it with `add_taste_note`.
+
+- `~/.config/abletonconnect/taste.md` is the user's file (template:
+  `docs/taste.example.md`). `taste.py` reads it by `##`/`###` section and only
+  ever inserts a dated line at the end of a section; never rewrite or reorder
+  the user's text. "(draft)" marks lines the user hasn't confirmed.
+- Machine-specific files stay out of the repo: plugins.json, plugin_roles.yaml
+  and taste.md in ~/.config/abletonconnect, kits in the User Library.
+- Later phases plug in here: the .als parser can propose taste notes and kit
+  candidates from finished projects, the sample index already feeds the palette
+  through `search_samples`, and the analyzer can check the profile's Mix section.
+  "Extend my idea" workflows start from the seed the INSTRUCTIONS ask for.
 
 ## Claude Kits (verified in Live 12.4.7)
 

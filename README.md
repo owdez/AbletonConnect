@@ -9,13 +9,14 @@ it.
 Everything stays on your machine: the only socket is on `127.0.0.1`, and there's
 no telemetry and no outbound network traffic.
 
-> **Status:** Phase 1 (bridge + core tools) and Phase 2 (sample library index).
+> **Status:** Phase 1 (bridge + core tools), Phase 2 (sample library index), and
+> your plugins, Claude Kits and a taste profile.
 > Tested with Ableton Live 12.4.7 Suite on macOS (Apple silicon). Not affiliated
 > with or endorsed by Ableton.
 
 ## What Claude can do
 
-45 tools, each returning compact JSON with the state after the change:
+47 tools, each returning compact JSON with the state after the change:
 
 | Area | Tools |
 |---|---|
@@ -29,6 +30,7 @@ no telemetry and no outbound network traffic.
 | Metering | `get_meters` (peak and average level per track, return and master in dBFS, from Live's own meters while the set plays) |
 | Browser | `browse_browser`, `search_browser`, `load_browser_item` (devices, plugins, presets, samples, user folders; leaves the selected track and every track's record arm as they were) |
 | Sample library | `search_samples` (your sample folders by name, loop or one-shot, BPM, key, root note, brightness and length; instant, from a local index) |
+| Your taste | `get_taste_profile` (the whole profile or one section), `add_taste_note` (a dated note in the Feedback log or another section; never rewrites your text) |
 | Claude Kits | `list_kits` (your racks by role, tags or text, from `kits.yaml`), `load_kit` (onto a track; returns its macros and what each does) |
 | Your plugins | `list_plugins` (by kind, vendor, your role, text), `get_plugin_info` (formats, which one Live loads, parameters with their ranges, programs, your notes), `load_plugin` (by name), `get_plugin_programs`, `set_plugin_program` |
 
@@ -128,6 +130,8 @@ Open Live, start a new Claude Code session, and ask in plain language:
 - "Drums to -6 dB, hats 20% right, keys to the reverb return at -12 dB."
 - "In the build clip, sweep the bass filter from 200 Hz to 8 kHz over 8 bars, slow at first, and ride the reverb send up to 0 dB in the last 2."
 - "Name the scenes Intro, Build, Drop and Outro, then lay them out as 32 bars each on the timeline."
+- "Here's a chord progression I played in slot 1: build a bassline from my kits."
+- "I deleted that pad because it was too bright. Remember that."
 - "Undo that."
 
 If something's wrong, the tool's error says what to do, for example "Ableton
@@ -175,6 +179,28 @@ What the index knows about each file:
 | Root note (one-shots) | Pitch detection on tonal sounds like 808s, toms and vocal notes, named the way Live names notes (C3 = MIDI 60). Noisy sounds (hats, claps) get none. |
 | Brightness | Spectral centroid. "dark" and "bright" pick the darkest or brightest third of the other matches. |
 | Tags | Drum names and abbreviations, so "kick" finds `BD0010.wav`. |
+
+## Your taste
+
+Claude makes better calls when it knows what you like. Your taste profile is
+`~/.config/abletonconnect/taste.md`, a plain Markdown file outside the repo.
+Start from the template:
+
+```bash
+cp docs/taste.example.md ~/.config/abletonconnect/taste.md
+```
+
+Its sections: Identity & references; Defaults (tempo, keys, meter); Sound
+palette per role (your kits and plugins, and what to avoid); Harmony & melody;
+Rhythm & groove; Arrangement (section lengths, energy curve); Mix (levels,
+headroom, bus chains); Hard rules (always, never); and a dated Feedback log.
+
+Before making anything, Claude reads the profile with `get_taste_profile`, along
+with your kits and plugins, and it uses those before Live's stock sounds. It
+asks you for a seed (a clip you played, a progression, a reference track or a
+kit) rather than composing from scratch. When you change or delete something it
+made, it asks why and records your answer with `add_taste_note`, which only
+ever appends a dated line; your own text is never rewritten.
 
 ## Your plugins
 
@@ -284,6 +310,8 @@ and the MCP server read it; Live needs a restart to pick up a port change:
 - `sample_folders` entries are paths, or objects with a `browser` path for a
   folder that sits inside a folder added to Live's browser.
 - `sample_index` defaults to the path above.
+- `ABLETONCONNECT_TASTE`, `ABLETONCONNECT_PLUGIN_INDEX`, `ABLETONCONNECT_PLUGIN_ROLES` and
+  `ABLETONCONNECT_KITS` (environment variables) point the server at other files, as the tests do.
 - `kits_folder` overrides where Claude Kits live (default: `Claude Kits` in the
   User Library Live uses).
 

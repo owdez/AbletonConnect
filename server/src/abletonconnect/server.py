@@ -21,11 +21,20 @@ from sampleindex import config as sample_config
 from sampleindex import search as sample_search
 
 from . import kits as kit_store
+from . import taste
 from .client import LiveClient, LiveError
 from .plugins import index as plugin_index
 
 INSTRUCTIONS = """\
-Controls the Ableton Live set that's open on this Mac.
+Controls the Ableton Live set that's open on this Mac, for a producer with their own sound.
+Working with them:
+- Before creating anything, read get_taste_profile, list_kits and list_plugins. Their kits and plugins come before
+  Live's stock devices and presets; reach for stock only when nothing of theirs fits, and say so.
+- Don't compose from scratch. Ask for a seed first: a clip they played, a chord progression, a reference track or a
+  kit, and build from it within their taste profile (tempo, key, palette, hard rules).
+- When they change or delete something you made, ask why, then record the answer with add_taste_note (the Feedback
+  log by default). Never rewrite their profile; only add notes.
+Using Live:
 - Start with get_session_info. All indices are 0-based: tracks, clip slots (one per scene), devices, parameters, sends.
 - Every tool returns the state after the change. Each change is one Live undo step; `undo` reverts the last one.
 - Clips live in Session View slots (one per scene). Times and lengths are in beats (quarter notes); 4.0 is one bar
@@ -34,7 +43,8 @@ Controls the Ableton Live set that's open on this Mac.
 - Volume: prefer volume_db. Raw fader value 0.85 is 0 dB. Device parameters take what Live displays: '120 Hz', '350 ms', '1/4'.
 - Movement over time (filter sweeps, volume rides, rising sends for build-ups) goes in clip envelopes:
   set_clip_envelope on the Session clip, before arrange_scenes, which carries them onto the timeline.
-- Find sounds with search_browser or browse_browser, then load_browser_item with the returned path.
+- Their sounds: load_kit for a kit (returns its macros), load_plugin for a plugin by name. Otherwise find sounds
+  with search_browser or browse_browser, then load_browser_item with the returned path.
 - For samples on disk, use search_samples first: it searches a local index of the sample folders (BPM, key, loop or
   one-shot, root note, brightness) instantly. Load a result with load_browser_item(path=<its browser_path>).
 - Transport positions are 1-based bars or beats. To hear or meter one section, start_playback(bar=...) rather than
@@ -998,6 +1008,48 @@ async def load_kit(
             out[key] = kit[key]
     out["arm"] = loaded.get("arm")
     return dumps(plugin_index.annotate_devices(out, _plugin_entries(required=False)))
+
+
+# ---- taste profile (the user's ~/.config/abletonconnect/taste.md) -----------------------------------
+
+
+@mcp.tool(annotations=READ, structured_output=False)
+async def get_taste_profile(
+    section: Annotated[
+        str | None,
+        Field(description="One section, e.g. 'Defaults', 'Sound palette', 'Hard rules', 'Feedback log'. Omit for all."),
+    ] = None,
+) -> str:
+    """The user's taste profile: who they are and their references, default tempo, keys and meter,
+    their sound palette per role (kits, plugins, what to avoid), harmony, rhythm, arrangement and
+    mix habits, hard rules, and a dated feedback log of what they kept, changed or rejected. Read it
+    before making anything. Entries marked draft are unconfirmed: follow them, but say so."""
+    try:
+        return dumps(taste.get(section))
+    except taste.TasteError as e:
+        raise ToolError(str(e)) from e
+
+
+@mcp.tool(annotations=WRITE, structured_output=False)
+async def add_taste_note(
+    note: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="What they said and about what, e.g. 'Rejected the vocal bed: pads too bright, wants darker, sparser chords.'",
+        ),
+    ],
+    section: Annotated[
+        str, Field(description="The section to add to; default the Feedback log.")
+    ] = taste.DEFAULT_SECTION,
+) -> str:
+    """Append a dated note to the user's taste profile, at the end of the Feedback log or another
+    section. Nothing else in the file changes. Use it when they change or delete something you made
+    (after asking why), or tell you a preference worth keeping."""
+    try:
+        return dumps(taste.add_note(note, section))
+    except taste.TasteError as e:
+        raise ToolError(str(e)) from e
 
 
 # ---- sample library (local index, no Live round trip) ----------------------------------------------
