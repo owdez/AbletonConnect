@@ -142,6 +142,12 @@ check() {
   local prefs log
   prefs="$(prefs_dir)"
   log="$prefs/Log.txt"
+  echo "Repo:     '$REPO'"
+  if [[ "$REPO" =~ [[:space:]]$ || "$REPO" =~ [[:space:]]/ ]]; then
+    echo "          WARNING: a folder in this path ends in a space. The scripts quote it and work, but"
+    echo "          anything that splits or trims paths (unquoted shell, some apps) will break."
+    echo "          README > 'Moving the repo' has the steps to rename it."
+  fi
   echo "Install:  $DEST"
   if [[ -L "$DEST" ]]; then
     echo "          symlink -> $(readlink "$DEST")"
@@ -207,10 +213,10 @@ case "${1:-}" in
     exit 0
     ;;
   --copy)
-    MODE=copy
+    MODE="copy"
     ;;
   ""|--link)
-    MODE=link
+    MODE="link"
     ;;
   *)
     sed -n '2,10p' "$0"

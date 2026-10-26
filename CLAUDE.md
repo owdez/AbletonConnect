@@ -411,7 +411,7 @@ That file is git-ignored; read it when it exists.
 - Debug with Log.txt: `scripts/tail_log.sh` (filters LiveBridge lines) and
   `scripts/install.sh --check` (install and whether a copy is older than the
   repo, where Claude Code and the desktop app run the server from, log lines
-  since Live started, and the port).
+  since Live started, port, and a warning if the repo path ends in a space).
 - Sample index: `uv run --project tools/sampleindex sampleindex scan` (add
   `--force` to re-analyze everything), `sampleindex stats`, and
   `sampleindex search "dark kick" --kind oneshot`.

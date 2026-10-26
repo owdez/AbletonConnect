@@ -262,6 +262,41 @@ including librosa on generated audio with a known tempo and pitch.
 the quirks of Live's embedded Python that shaped the design (GIL starvation of
 background threads, `schedule_message` re-entrancy, macOS socket behaviour).
 
+## Moving the repo
+
+The scripts quote every path, so the repo works from any folder, including one
+whose name has spaces (`scripts/install.sh --check` warns about a folder name
+that ends in one, since that's easy to break by hand). To move or rename it:
+
+1. Quit the Claude desktop app and close Claude Code sessions running in the
+   repo, so nothing has files open in it.
+2. Move it, quoting both paths:
+
+   ```bash
+   mv "$HOME/Developer/AbletonConnect " "$HOME/Developer/AbletonConnect"
+   ```
+
+3. From the new folder, reconnect the git worktrees. They live inside the repo,
+   so both ends moved; passing their new paths repairs both directions:
+
+   ```bash
+   git worktree repair .claude/worktrees/*
+   ```
+
+4. Rebuild the uv environments, whose editable installs record the old path:
+
+   ```bash
+   rm -rf server/.venv tools/sampleindex/.venv && uv sync --project server && uv sync --project tools/sampleindex
+   ```
+
+5. Register the MCP server again, in Claude Code (`claude mcp remove --scope
+   user ableton`, then the `claude mcp add` command from Install) and in the
+   desktop app (`scripts/install.sh --desktop`).
+6. With a symlink install, run `scripts/install.sh` again and restart Live. A
+   copy install doesn't depend on where the repo is.
+7. `scripts/install.sh --check` should show both registrations pointing at the
+   new `server` folder.
+
 ## License
 
 [MIT](LICENSE)
