@@ -231,6 +231,7 @@ async def main() -> int:
         )
         instrument = hits[0]["path"] if hits else None
     if instrument:
+        before = await t.run("get_session_info", mutating=False)
         out = await t.step(
             "load_browser_item instrument",
             t.run("load_browser_item", timeout=20, path=instrument, track_index=midi),
@@ -240,6 +241,15 @@ async def main() -> int:
                 "load_browser_item instrument",
                 out["changed"] and bool(out["devices"]),
                 ", ".join(d["name"] for d in out["devices"]),
+            )
+            after = await t.run("get_session_info", mutating=False)
+            arms = [(tr.get("arm"), tr.get("implicit_arm")) for tr in after["tracks"]]
+            t.check(
+                "load leaves selection and arms",
+                after.get("selected_track") == before.get("selected_track")
+                and arms
+                == [(tr.get("arm"), tr.get("implicit_arm")) for tr in before["tracks"]],
+                f"arm {out.get('arm')}, restored {out.get('arm_restored', [])}",
             )
 
     print("\nDevice parameters")

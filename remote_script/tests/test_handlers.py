@@ -258,7 +258,10 @@ def test_parse_display():
 def test_rename_arm_and_delete_tracks(d, live):
     song, _ = live
     out = result(d, "set_track", track_index=0, name="Kick", arm=True)
-    assert out["name"] == "Kick" and out["arm"] is True
+    assert out["name"] == "Kick" and out["arm"] is True and "note" not in out
+    song.tracks[1].has_input = False  # no audio input device: Live keeps the track unarmed, silently
+    out = result(d, "set_track", track_index=1, arm=True)
+    assert out["arm"] is False and "kept '2-Audio' unarmed" in out["note"]
     assert "can't be armed" in failure(d, "set_track", track_index=0, track_type="return", arm=True)["message"]
     assert "Nothing to change" in failure(d, "set_track", track_index=0)["message"]
     out = result(d, "delete_track", track_index=0)
@@ -342,7 +345,7 @@ def test_load_items(d, live):
     song, app = live
     out = result(d, "load_browser_item", path="audio_effects/Reverb", track_index=1)
     assert out["changed"] is True and out["devices"][-1]["name"] == "Reverb"
-    assert song.view.selected_track is song.tracks[1]
+    assert app.browser.loaded == ["Reverb"] and song.view.selected_track is song.tracks[0]  # selected for the load, then put back
     out = result(d, "load_browser_item", path="user_folders/Samples/Drums/Kick 03.wav", track_index=1, clip_slot_index=2)
     assert out["clip"]["name"] == "Kick 03" and out["clip"]["type"] == "audio"
     assert "clip_slot_index" in failure(d, "load_browser_item", path="user_folders/Samples/Drums/Kick 04.wav", track_index=1)["message"]
@@ -357,7 +360,35 @@ def test_load_reports_no_change(d, live, monkeypatch):
     assert out["changed"] is False and "note" in out
 
 
-LOOP = "user_folders/Samples/Loops/Cymbal Loop.wav"
+def test_load_leaves_selection_and_arm_alone(d, live):
+    # Regression: browser.load_item arms the track it loads onto, so a preset load left a MIDI
+    # track armed and the next vocal take would have recorded over its part too.
+    song, app = live
+    vocals = song.tracks[1]
+    song.view.selected_track = vocals
+    out = result(d, "load_browser_item", path="instruments/Operator", track_index=0)
+    assert out["devices"][0]["name"] == "Operator"
+    assert out["arm"] is False and out["arm_restored"] == ["1-MIDI"] and song.tracks[0].arm is False
+    assert song.view.selected_track is vocals
+    # With a track the user armed, Live arms nothing, and the user's arm stays.
+    vocals.arm = True
+    out = result(d, "load_browser_item", path="audio_effects/Reverb", track_index=0)
+    assert out["arm"] is False and "arm_restored" not in out and vocals.arm is True
+
+
+def test_instrument_on_an_audio_track_goes_to_a_new_unarmed_track(d, live):
+    song, app = live
+    song.create_midi_track()  # "3-MIDI", after the audio track
+    keys = song.tracks[2]
+    out = result(d, "load_browser_item", path="instruments/Operator", track_index=1)
+    assert [t["name"] for t in out["new_tracks"]] == ["4-MIDI"] and out["new_tracks"][0]["index"] == 2
+    assert out["new_tracks"][0]["devices"] == ["Operator"] and out["new_tracks"][0]["arm"] is False
+    assert out["changed"] is True and "new track" in out["note"]
+    assert song.tracks[3] is keys and keys.arm is False and not any(t.arm for t in song.tracks)
+    assert song.view.selected_track is song.tracks[0]
+
+
+LOOP ="user_folders/Samples/Loops/Cymbal Loop.wav"
 
 
 def test_user_folder_sample_into_clip_slot_is_one_undo_step(d, live, tmp_path):
@@ -368,7 +399,7 @@ def test_user_folder_sample_into_clip_slot_is_one_undo_step(d, live, tmp_path):
     assert out["clip"]["name"] == "Cymbal Loop" and out["clip"]["file"] == str(tmp_path / "Samples" / "Loops" / "Cymbal Loop.wav")
     assert "tempo" not in out and song.tempo == 120.0
     assert song.undo_steps == 1 and song.undo_depth == 0 and app.browser.loaded == []
-    assert song.view.selected_track is song.tracks[1]
+    assert song.view.selected_track is song.tracks[0]  # created from the file: no need to select the track
     # A sample onto a MIDI track still goes through the browser (into Simpler).
     out = result(d, "load_browser_item", path="user_folders/Samples/Drums/Kick 01.wav", track_index=0)
     assert out["devices"][0]["name"] == "Simpler" and app.browser.loaded == ["Kick 01.wav"]

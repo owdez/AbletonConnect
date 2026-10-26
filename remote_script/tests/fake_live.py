@@ -467,7 +467,9 @@ class FakeTrack:
         self.color = 0x3366FF
         self._mute = False
         self.solo = False
-        self.arm = False
+        self._arm = False
+        self.implicit_arm = False  # set by auto-arm control surfaces on the selected track
+        self.has_input = True  # an audio track with no input device can't be armed
         self.kind = kind
         self.has_midi_input = kind == "midi"
         self.has_audio_input = kind in ("audio", "return", "master")
@@ -493,6 +495,16 @@ class FakeTrack:
     def has_audio_output(self):
         # A MIDI track only outputs audio once it has an instrument.
         return self.kind != "midi" or any(str(d.type) == "instrument" for d in self.devices)
+
+    @property
+    def arm(self):
+        return self._arm
+
+    @arm.setter
+    def arm(self, value):
+        if self.kind not in ("midi", "audio"):
+            raise RuntimeError("Main and Return Tracks have no 'Arm' state!")
+        self._arm = bool(value) and self.has_input  # Live doesn't raise, it just stays unarmed
 
     @property
     def mute(self):
@@ -592,6 +604,7 @@ class FakeSong:
         self.tracks = [FakeTrack("1-MIDI", "midi", n_scenes, n_sends=2), FakeTrack("2-Audio", "audio", n_scenes, n_sends=2)]
         self.master_track = FakeTrack("Master", "master")
         self.view = SongView()
+        self.auto_armed = None  # the track browser.load_item last armed
         self.view.selected_track = self.tracks[0]
         self.view.selected_scene = self.scenes[0]
         self.undo_log = []
@@ -752,7 +765,8 @@ class FakeBrowser:
 
     def load_item(self, item):
         # Like Live 12.4.7: the load is an undo step of its own, whatever undo step the script has
-        # open, and the first loop in a set also sets the tempo as a second step.
+        # open, and the first loop in a set also sets the tempo as a second step. An instrument
+        # meant for an audio track lands on a new MIDI track after it, which Live selects.
         self.loaded.append(item.name)
         song = self._song
         song.undo_steps += 1
@@ -767,11 +781,25 @@ class FakeBrowser:
                 if first and item.tempo:
                     song._tempo = item.tempo
                     song.undo_steps += 1
+            self._auto_arm(track)
             return
-        if item.factory:
-            track.devices.append(item.factory())
-        else:
-            track.devices.append(FakeDevice(item.name))
+        device = item.factory() if item.factory else FakeDevice(item.name)
+        if str(device.type) == "instrument" and track in song.tracks and not track.has_midi_input:
+            song.create_midi_track(song.tracks.index(track) + 1)
+            track = song.view.selected_track = song.tracks[song.tracks.index(track) + 1]
+        track.devices.append(device)
+        self._auto_arm(track)
+
+    def _auto_arm(self, track):
+        # Live 12.4.7 often arms the track a script loads onto, unless the user armed a track, and
+        # moves the arm it gave on an earlier load. The fake always does: the worst case.
+        song = self._song
+        if not track.can_be_armed or any(t.arm and t is not song.auto_armed for t in song.tracks):
+            return
+        if song.auto_armed is not None:
+            song.auto_armed.arm = False
+        track.arm = True
+        song.auto_armed = track
 
 
 class AppView:

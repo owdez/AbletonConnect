@@ -37,6 +37,8 @@ read-only .als parser (tools/) that never talks to Live.
    (`set_device_property`) and Live's own output meters (`get_meters`, an
    interim step before Phase 3, not a replacement), then clip envelopes
    (`set_clip_envelope`), which `arrange_scenes` carries onto the timeline.
+   Then `load_browser_item` putting back the selection and record arms it
+   used to change.
 2. **Sample library index.** Scan the sample folders and analyze each file
    with librosa (BPM, key, brightness, length, one-shot or loop type) into a
    local index, then add a search tool. This runs outside Live. Live's browser
@@ -321,6 +323,24 @@ That file is git-ignored; read it when it exists.
   `get_meters` reports the level and adds `"mute": true`.
 - MIDI tracks with no instrument have `has_audio_output` False; their
   meters read 0.
+
+## Record arm (verified in Live 12.4.7)
+
+- **A script load can arm the track.** After the script moved the selection
+  and called `browser.load_item`, Live often armed that track (`track.arm`,
+  not `implicit_arm`) and disarmed the one it armed on an earlier load. It
+  didn't when loading onto the already selected track, re-loading onto a
+  track it had armed before, or while the user had any track armed. Clicking
+  a track or loading from Live's own browser arms nothing. An instrument
+  loaded onto an audio track goes onto a new MIDI track, which Live selects
+  and arms. Since the rule isn't predictable, `load_browser_item` restores the
+  selection and every arm after every load, matching tracks by identity (a
+  new track shifts indices).
+- Komplete_Kontrol_A (Control Surface slot 1 here) has Ableton's
+  `AutoArmComponent`, which sets `implicit_arm` on the selected track. With
+  its keyboard unplugged (Input None) it arms nothing.
+- With no audio input device, `track.arm = True` on an audio track is
+  silently ignored; `set_track` says so.
 
 ## Conventions
 

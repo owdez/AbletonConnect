@@ -11,6 +11,16 @@ clip in the set, Live also sets the song tempo from it as a second undo step.
 So a sample from a user folder goes into an audio clip slot through
 ClipSlot.create_audio_clip instead. That gives the same clip in one step and
 leaves the tempo alone.
+
+Arm (seen in Live 12.4.7): browser.load_item loads onto the selected track, so
+loading selects it. When that moved the selection, Live often armed the track
+(track.arm, not implicit_arm) and disarmed the one it armed on an earlier load:
+not on a track it had armed before, not when loading onto the already selected
+track, and never while the user had a track armed. Clicking a track or loading
+from Live's own browser arms nothing. An instrument loaded onto an audio track
+goes onto a new MIDI track, which Live selects and arms. Since the rule isn't
+predictable, the selection is put back after every load and every arm restored;
+a new track ends up unarmed.
 """
 
 import collections
@@ -19,7 +29,7 @@ import time
 import urllib.parse
 
 from ..dispatch import WAIT, command
-from ..lom import clip_summary, device_brief, get_clip_slot, get_track, require_int, require_number, rnd
+from ..lom import arm_state, clip_summary, device_brief, get_clip_slot, get_track, require_int, require_number, rnd, safe, track_brief
 from ..protocol import BridgeError
 
 CATEGORIES = (
@@ -231,7 +241,8 @@ def search_browser(ctx, query, categories=None, max_results=30, max_depth=8, tim
 
 @command()
 def load_browser_item(ctx, path, track_index=None, track_type="track", clip_slot_index=None):
-    """Select the track (and clip slot), load the item, and wait for Live to show the result.
+    """Select the track (and clip slot), load the item, wait for Live to show the result, then
+    put the selection and every track's arm back the way they were.
 
     A sample from a user folder going into an audio clip slot is created from its file, in one
     undo step (see the module docstring).
@@ -255,22 +266,31 @@ def load_browser_item(ctx, path, track_index=None, track_type="track", clip_slot
 
     before = _snapshot(track, slot)
     tempo = song.tempo
-    song.view.selected_track = track
-    if slot is not None:
-        song.view.highlighted_clip_slot = slot
+    view = song.view
+    tracks = list(song.tracks)
+    selection = (view.selected_track, safe(lambda: view.selected_scene))
+    arms = _arm_states(song)
     file_path = _sample_file(browser, parts) if is_sample and slot is not None and not track.has_midi_input else None
     if file_path:
         with ctx.undo_step():
             slot.create_audio_clip(file_path)
     else:
-        browser.load_item(item)  # records its own undo step
+        view.selected_track = track
+        if slot is not None:
+            view.highlighted_clip_slot = slot
+        browser.load_item(item)  # loads onto the selected track and may arm it; records its own undo step
 
     changed = False
     for _ in range(LOAD_WAIT_TICKS):
-        if _snapshot(track, slot) != before:
+        if _snapshot(track, slot) != before or len(song.tracks) != len(tracks):
             changed = True
             break
         yield WAIT
+
+    _restore_selection(view, *selection)
+    restored = _restore_arms(song, arms)
+    yield WAIT  # control surfaces react to the selection change on their next tick
+    restored += [name for name in _restore_arms(song, arms) if name not in restored]
 
     out = {
         "loaded": item.name,
@@ -279,9 +299,16 @@ def load_browser_item(ctx, path, track_index=None, track_type="track", clip_slot
         "changed": changed,
         "devices": [device_brief(d, i) for i, d in enumerate(track.devices)],
     }
+    out.update(arm_state(track))
+    if restored:
+        out["arm_restored"] = restored
     if slot is not None and slot.has_clip:
         out["clip"] = clip_summary(slot.clip, clip_slot_index, notes=False)
-    if not changed:
+    added = [(i, t) for i, t in enumerate(song.tracks) if not any(t == old for old in tracks)]
+    if added:
+        out["new_tracks"] = [track_brief(t, i) for i, t in added]
+        out["note"] = "'%s' can't hold %s, so Live put it on a new track." % (track.name, item.name)
+    elif not changed:
         out["note"] = "Live hasn't shown a change yet. Plugins can take a few seconds; check get_track_info."
     if song.tempo != tempo:
         out["tempo"] = {"from": rnd(tempo, 3), "to": rnd(song.tempo, 3)}
@@ -303,6 +330,36 @@ def _sample_file(browser, parts):
         return None
     path = os.path.join(urllib.parse.unquote(uri[len("userfolder:") :].split("#", 1)[0]), *parts[2:])
     return path if os.path.isfile(path) else None
+
+
+def _arm_states(song):
+    """[(track, arm, implicit_arm)] for every track that can be armed. implicit_arm is the arm an
+    auto-arm control surface (Push, Komplete Kontrol with its keyboard attached) gives the
+    selected track; Live shows it dimmer and doesn't save it."""
+    return [(t, bool(t.arm), bool(safe(lambda t=t: t.implicit_arm, False))) for t in song.tracks if safe(lambda t=t: t.can_be_armed, False)]
+
+
+def _restore_selection(view, track, scene):
+    for name, value in (("selected_track", track), ("selected_scene", scene)):
+        if value is not None and safe(lambda name=name: getattr(view, name)) != value:
+            safe(lambda name=name, value=value: setattr(view, name, value))
+
+
+def _restore_arms(song, before):
+    """Put every arm back the way `before` had it; a track the load created ends up unarmed.
+    Tracks are matched by identity, since a new track shifts the indices after it. Returns the
+    names of the tracks it changed."""
+    fixed = []
+    for track, arm, implicit in _arm_states(song):
+        want = next(((a, i) for t, a, i in before if t == track), (False, False))
+        if (arm, implicit) == want:
+            continue
+        if implicit != want[1]:
+            safe(lambda: setattr(track, "implicit_arm", want[1]))
+        if bool(track.arm) != want[0]:
+            safe(lambda: setattr(track, "arm", want[0]))
+        fixed.append(track.name)
+    return fixed
 
 
 def _snapshot(track, slot):

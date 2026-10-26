@@ -27,7 +27,7 @@ no telemetry and no outbound network traffic.
 | Transport | `start_playback`, `stop_playback` |
 | Sound design | `get_device_parameters`, `set_device_parameter` (by index or name; what Live displays, like `"120 Hz"`, `"350 ms"` or `"1/4"`, or raw or normalized values), `set_device_property` (Simpler's playback mode: Classic, One-Shot, Slicing). Devices inside Instrument, Effect and Drum Racks are reached with a `device_path`; `get_track_info` lists every rack's chains and the path of each device in them |
 | Metering | `get_meters` (peak and average level per track, return and master in dBFS, from Live's own meters while the set plays) |
-| Browser | `browse_browser`, `search_browser`, `load_browser_item` (devices, plugins, presets, samples, user folders) |
+| Browser | `browse_browser`, `search_browser`, `load_browser_item` (devices, plugins, presets, samples, user folders; leaves the selected track and every track's record arm as they were) |
 | Sample library | `search_samples` (your sample folders by name, loop or one-shot, BPM, key, root note, brightness and length; instant, from a local index) |
 
 Every change is a single Live undo step, so `undo` (or Cmd+Z) reverts exactly

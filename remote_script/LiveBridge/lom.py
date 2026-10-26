@@ -152,14 +152,24 @@ def track_kind(track, track_type="track"):
     return "audio"
 
 
+def arm_state(track):
+    """{"arm": ...} for tracks that can be armed, plus "implicit_arm" when an auto-arm control
+    surface (Komplete Kontrol, Push) has armed it for being selected. Either way it records."""
+    if not safe(lambda: track.can_be_armed, False):
+        return {}
+    out = {"arm": bool(safe(lambda: track.arm, False))}
+    if safe(lambda: track.implicit_arm, False):
+        out["implicit_arm"] = True
+    return out
+
+
 def track_brief(track, index, track_type="track"):
     """One line per track for overviews."""
     out = {"index": index, "name": track.name, "kind": track_kind(track, track_type)}
     if track_type != "master":
         out["mute"] = bool(safe(lambda: track.mute, False))
         out["solo"] = bool(safe(lambda: track.solo, False))
-        if safe(lambda: track.can_be_armed, False):
-            out["arm"] = bool(safe(lambda: track.arm, False))
+        out.update(arm_state(track))
     out["volume"] = param_display(track.mixer_device.volume)
     if safe(lambda: track.is_grouped, False):
         out["group"] = safe(lambda: track.group_track.name)
@@ -211,8 +221,7 @@ def mixer_state(track, song, track_type="track"):
 def track_detail(track, index, song, track_type="track"):
     out = {"index": index, "type": track_type, "name": track.name, "kind": track_kind(track, track_type)}
     out["color"] = color_hex(safe(lambda: track.color))
-    if safe(lambda: track.can_be_armed, False):
-        out["arm"] = bool(safe(lambda: track.arm, False))
+    out.update(arm_state(track))
     if safe(lambda: track.is_grouped, False):
         out["group"] = safe(lambda: track.group_track.name)
     routing_in = safe(lambda: track.input_routing_type.display_name)

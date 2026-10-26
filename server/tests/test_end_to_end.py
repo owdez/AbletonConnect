@@ -183,6 +183,17 @@ async def test_tool_list_matches_bridge_commands(stack):
         assert tools - local <= set(COMMANDS)
 
 
+async def test_loading_leaves_arm_and_selection_alone(stack):
+    async with connect() as client:
+        song, _ = stack
+        song.view.selected_track = song.tracks[1]
+        out = await tool(client, "load_browser_item", path="instruments/Operator", track_index=0)
+        assert out["arm"] is False and out["arm_restored"] == ["1-MIDI"]
+        assert song.view.selected_track is song.tracks[1] and not any(t.arm for t in song.tracks)
+        info = await tool(client, "get_session_info")
+        assert info["selected_track"] == {"type": "track", "index": 1}
+
+
 async def test_song_layout_through_every_layer(stack):
     async with connect() as client:
         song, main = stack
