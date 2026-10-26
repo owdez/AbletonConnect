@@ -84,6 +84,16 @@ is wrapped so an error becomes an error response and is logged to Live's
    claude mcp add --scope user ableton -- "$(which uv)" --directory "$PWD/server" run abletonconnect-mcp
    ```
 
+   For the **Claude desktop app** (its chats, not Claude Code), run:
+
+   ```bash
+   scripts/install.sh --desktop
+   ```
+
+   It backs up `~/Library/Application Support/Claude/claude_desktop_config.json`,
+   adds an `ableton` server with uv's absolute path (the app doesn't see your
+   shell's `PATH`) and keeps every other entry. Quit and reopen the app to load it.
+
 5. **Check it:**
 
    ```bash
@@ -91,9 +101,10 @@ is wrapped so an error becomes an error response and is logged to Live's
    ```
 
    This shows the install (and whether a copy install is older than the repo),
-   LiveBridge's log lines since Live started, and whether the port is open. A
-   Claude session loads the MCP server when it starts, so a session that was
-   already open keeps the old tools until it's restarted.
+   where Claude Code and the desktop app run the server from, LiveBridge's log
+   lines since Live started, and whether the port is open. A Claude session
+   loads the MCP server when it starts, so a session that was already open
+   keeps the old tools until it's restarted.
 
    To exercise every tool against a new, empty Live set, run the smoke test.
    It adds two "LB smoke" tracks; close the set without saving afterwards.

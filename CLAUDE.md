@@ -400,9 +400,13 @@ That file is git-ignored; read it when it exists.
   Live doesn't need a restart for those. A session started before a server
   change keeps the old tool list: that, not a missing handler, is what a
   "the bridge has commands the server doesn't expose" report usually means.
+  The Claude desktop app reads its own config: `scripts/install.sh --desktop`
+  adds the same server there (backing the file up first), and the app needs a
+  restart to load it.
 - Debug with Log.txt: `scripts/tail_log.sh` (filters LiveBridge lines) and
   `scripts/install.sh --check` (install and whether a copy is older than the
-  repo, log lines since Live started, and the port).
+  repo, where Claude Code and the desktop app run the server from, log lines
+  since Live started, and the port).
 - Sample index: `uv run --project tools/sampleindex sampleindex scan` (add
   `--force` to re-analyze everything), `sampleindex stats`, and
   `sampleindex search "dark kick" --kind oneshot`.
