@@ -74,7 +74,8 @@ tools/sampleindex/          Phase 2: sample indexer (own uv project, Python 3.12
                             db.py (SQLite + FTS5), search.py, config.py, cli.py
   tests/                    names, config, search and scan (fake analyzer), librosa on generated audio
 tools/                      Phase 4: .als parser (not yet)
-scripts/                    install.sh, tail_log.sh, smoke_test.py
+scripts/                    install.sh (macOS), install.ps1 (Windows), mcp_config.py (both),
+                            tail_log.sh, smoke_test.py
 docs/                       taste.example.md (the taste profile template)
 ```
 
@@ -148,6 +149,45 @@ That file is git-ignored; read it when it exists.
   script there, or copies it with `--copy`.
 - Quote every path in scripts and docs. Repo checkouts and Live's folders can
   contain spaces.
+
+## Windows (written, not yet run on Windows)
+
+Nothing here has been tried on a Windows machine yet. Record what a real
+install shows, and move each fact up to "verified" once it's checked.
+
+- `scripts/install.ps1` matches `install.sh` (`-Check`, `-Desktop`,
+  `-Uninstall`) but always copies: a symlink needs admin rights or Developer
+  Mode, and nobody has checked whether Live follows a junction. It must run on
+  Windows PowerShell 5.1, so keep it ASCII (5.1 reads a BOM-less file as
+  ANSI), avoid `?:`/`??`/`&&`, and use `-LiteralPath` and .NET file calls
+  (paths can contain `[ ]`).
+- `scripts/mcp_config.py` reads and edits Claude's MCP registrations for both
+  install scripts (stdlib, Python 3.9 for macOS's `/usr/bin/python3`; on
+  Windows it runs through `uv run --no-project`). PowerShell 5.1's
+  `ConvertFrom-Json` fails on files over 2 MB, and `~/.claude.json` gets that big.
+- Paths (`config.live_prefs_dirs`, `default_user_library`, `log_hint`):
+  Live's preferences folder is `%APPDATA%\Ableton\Live 12.x.x\Preferences`
+  (Library.cfg, Log.txt), and the default User Library is
+  `Documents\Ableton\User Library`. The sample index defaults to
+  `%LOCALAPPDATA%\AbletonConnect\samples.db`. `~/.config/abletonconnect` is
+  `%USERPROFILE%\.config\abletonconnect` on both sides.
+- `is_live_running` reads `tasklist /FO CSV /NH`. The image name carries the
+  edition ("Ableton Live 12 Suite.exe").
+- The plugin scan uses macOS tools (auval, lsof, screencapture, CGWindowList),
+  so `abletonconnect-scan-plugins` exits with `plugins.SCAN_ON_WINDOWS` and
+  `list_plugins` returns the same text.
+- The desktop app's config is `%APPDATA%\Claude\claude_desktop_config.json`, or
+  for the Microsoft Store build, its copy under
+  `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude`. `-Desktop`
+  refuses while a `claude.exe` runs from anywhere but `~\.local` (Claude Code's
+  own binary).
+- The Remote Script's sockets use `selectors.DefaultSelector`, which is
+  `select()` on Windows. Windows `select()` takes socket handles, so the fd-1024
+  limit doesn't apply, but nobody has tried the non-blocking sends or the GIL
+  hand-off (`time.sleep(0.001)` each tick) there.
+- Still unknown: how Library.cfg writes `ProjectPath` on Windows, whether Log.txt
+  has the same "info: Started: Live" line `-Check` looks for, and what
+  `userfolder:` uris look like (`handlers/browser.py`, sample index paths).
 
 ## Bridge protocol (v1)
 

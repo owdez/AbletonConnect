@@ -2,10 +2,12 @@
 
 import asyncio
 import socket
+import subprocess
 
 import pytest
 from fake_bridge import FakeBridge
 
+from abletonconnect import client, config
 from abletonconnect.client import ConnectionLost, LiveClient, LiveCommandError, LiveTimeout, LiveUnavailable
 
 
@@ -148,6 +150,37 @@ async def test_script_not_loaded_message():
         await c.request("ping", mutating=False)
     msg = str(e.value)
     assert "Live is running" in msg and "Control Surface" in msg and "restart Live" in msg and str(port) in msg
+
+
+async def test_messages_on_windows_name_install_ps1_and_appdata(monkeypatch):
+    monkeypatch.setattr(config, "WINDOWS", True)
+    c = client_for(free_port(), live_running=lambda: True)
+    with pytest.raises(LiveUnavailable) as e:
+        await c.request("ping", mutating=False)
+    assert r"scripts\install.ps1" in str(e.value) and r"%APPDATA%\Ableton" in str(e.value)
+
+
+@pytest.mark.parametrize(
+    "tasklist, running",
+    [
+        (
+            '"System Idle Process","0","Services","0","8 K"\n"Ableton Live 12 Suite.exe","4242","Console","1","9 K"\n',
+            True,
+        ),
+        ('"System Idle Process","0","Services","0","8 K"\n"explorer.exe","77","Console","1","9 K"\n', False),
+    ],
+)
+def test_is_live_running_on_windows_reads_tasklist(monkeypatch, tasklist, running):
+    monkeypatch.setattr(client, "WINDOWS", True)
+    seen = []
+
+    def run(cmd, **kw):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout=tasklist, stderr="")
+
+    monkeypatch.setattr(client.subprocess, "run", run)
+    assert client.is_live_running() is running
+    assert seen[0][0] == "tasklist"
 
 
 async def test_protocol_mismatch():

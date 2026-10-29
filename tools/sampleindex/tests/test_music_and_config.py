@@ -76,6 +76,12 @@ def test_bad_config_says_what_to_fix(tmp_path):
         config.sample_folders({"sample_folders": "/a"})
 
 
+def test_default_index_on_windows_is_in_local_appdata(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    assert config.default_index(windows=True) == tmp_path / "AbletonConnect" / "samples.db"
+    assert config.default_index(windows=False).parts[-3:] == ("Application Support", "AbletonConnect", "samples.db")
+
+
 def test_index_path_env_overrides_config(monkeypatch, tmp_path):
     monkeypatch.delenv(config.INDEX_ENV, raising=False)
     assert config.index_path({}) == config.DEFAULT_INDEX

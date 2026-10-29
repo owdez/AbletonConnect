@@ -20,7 +20,8 @@ import sys
 from pathlib import Path
 
 from ..client import LiveClient, LiveError
-from . import disk, index, live
+from ..config import WINDOWS
+from . import SCAN_ON_WINDOWS, disk, index, live
 from .roles_seed import seed_roles
 
 
@@ -116,6 +117,8 @@ async def scan(args: argparse.Namespace) -> int:
 
 
 def main() -> None:
+    if WINDOWS:
+        sys.exit(SCAN_ON_WINDOWS)
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--no-live", action="store_true", help="read the disk only")
     parser.add_argument("--only", action="append", help="capture only plugins whose name contains this (repeatable)")

@@ -21,7 +21,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--index",
         type=Path,
-        help="Index file (default: from config, or ~/Library/Application Support/AbletonConnect/samples.db).",
+        help=f"Index file (default: from config, or {config.DEFAULT_INDEX}).",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
