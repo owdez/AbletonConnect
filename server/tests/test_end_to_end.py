@@ -404,6 +404,9 @@ async def test_plugin_tools_without_an_index_say_how_to_make_one(stack, tmp_path
     async with connect() as client:
         assert "abletonconnect-scan-plugins" in (await tool(client, "list_plugins"))["error"]
         assert (await tool(client, "get_track_info", track_index=0))["name"] == "1-MIDI"  # still works without one
+        # The scan is macOS-only, so on Windows the error points at the browser instead.
+        monkeypatch.setattr(mcp_server, "WINDOWS", True)
+        assert "load_browser_item" in (await tool(client, "list_plugins"))["error"]
 
 
 async def test_kit_tools_through_every_layer(stack, tmp_path, monkeypatch):

@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from .config import CONFIG_PATH
+from .config import CONFIG_PATH, default_user_library, live_prefs_dirs
 
 FOLDER = "Claude Kits"
 SUBFOLDERS = ("Drums", "Bass", "Synths", "Pads", "FX", "Vocal Chains", "Mix Bus")
@@ -23,10 +23,7 @@ KIT_KEYS = ("file", "role", "tags", "range", "macros", "starter", "notes")
 
 def user_library() -> Path:
     """The User Library from Live's newest Library.cfg, else Live's default location."""
-    prefs = sorted(
-        Path("~/Library/Preferences/Ableton").expanduser().glob("Live *"), key=lambda p: p.stat().st_mtime, reverse=True
-    )
-    for folder in prefs:
+    for folder in live_prefs_dirs():
         try:
             text = (folder / "Library.cfg").read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -36,7 +33,7 @@ def user_library() -> Path:
         name = re.search(r'<ProjectName Value="([^"]*)"', block.group(1)) if block else None
         if path and name and (Path(path.group(1)) / name.group(1)).is_dir():
             return Path(path.group(1)) / name.group(1)
-    return Path("~/Music/Ableton/User Library").expanduser()
+    return default_user_library()
 
 
 def kits_dir() -> Path:

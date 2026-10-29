@@ -2,7 +2,7 @@
 
 import pytest
 
-from abletonconnect import kits
+from abletonconnect import config, kits
 
 MANIFEST = """\
 kits:
@@ -98,15 +98,31 @@ def test_macros_leave_out_unmapped_ones():
     ]
 
 
-def test_user_library_comes_from_lives_library_cfg(tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    prefs = home / "Library" / "Preferences" / "Ableton" / "Live 12.4.7"
+def write_library_cfg(prefs, library):
     prefs.mkdir(parents=True)
-    library = tmp_path / "Elsewhere" / "My Library"
     library.mkdir(parents=True)
     (prefs / "Library.cfg").write_text(
         f'<Ableton><ContentLibrary><UserLibrary><LibraryProject><ProjectPath Value="{library.parent}" />'
-        '<ProjectName Value="My Library" /></LibraryProject></UserLibrary></ContentLibrary></Ableton>'
+        f'<ProjectName Value="{library.name}" /></LibraryProject></UserLibrary></ContentLibrary></Ableton>'
     )
+
+
+def test_user_library_comes_from_lives_library_cfg(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    library = tmp_path / "Elsewhere" / "My Library"
+    write_library_cfg(home / "Library" / "Preferences" / "Ableton" / "Live 12.4.7", library)
+    monkeypatch.setattr(config, "WINDOWS", False)
     monkeypatch.setenv("HOME", str(home))
     assert kits.user_library() == library
+
+
+def test_user_library_on_windows_comes_from_appdata(tmp_path, monkeypatch):
+    library = tmp_path / "D Drive" / "User Library"
+    write_library_cfg(tmp_path / "Roaming" / "Ableton" / "Live 12.4.7" / "Preferences", library)
+    monkeypatch.setattr(config, "WINDOWS", True)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    assert kits.user_library() == library
+    # Without a Library.cfg, Live's default under Documents.
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no such folder"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    assert kits.user_library() == tmp_path / "home" / "Documents" / "Ableton" / "User Library"

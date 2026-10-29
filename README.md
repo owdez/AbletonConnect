@@ -11,7 +11,8 @@ no telemetry and no outbound network traffic.
 
 > **Status:** Phase 1 (bridge + core tools), Phase 2 (sample library index), and
 > your plugins, Claude Kits and a taste profile.
-> Tested with Ableton Live 12.4.7 Suite on macOS (Apple silicon). Not affiliated
+> Tested with Ableton Live 12.4.7 Suite on macOS (Apple silicon). Windows has an
+> installer but hasn't been tested yet (see [Windows](#windows)). Not affiliated
 > with or endorsed by Ableton.
 
 ## What Claude can do
@@ -57,7 +58,8 @@ is wrapped so an error becomes an error response and is logged to Live's
 
 ## Requirements
 
-- macOS and Ableton Live 12 (the Remote Script targets Live's bundled Python 3.11)
+- macOS (or Windows, untested) and Ableton Live 12 (the Remote Script targets
+  Live's bundled Python 3.11)
 - [uv](https://docs.astral.sh/uv/)
 - [Claude Code](https://claude.com/claude-code), or any other MCP client
 
@@ -119,6 +121,55 @@ is wrapped so an error becomes an error response and is logged to Live's
    ```bash
    uv run --project server python scripts/smoke_test.py
    ```
+
+### Windows
+
+Not tested on Windows yet. The Remote Script and the server use only portable
+Python, and `scripts\install.ps1` does what `install.sh` does. Run everything
+in Windows PowerShell, not WSL, because Live and its port are on the Windows side.
+`-ExecutionPolicy Bypass` applies only to that one run and changes no
+settings.
+
+1. Install [uv](https://docs.astral.sh/uv/) (`winget install --id=astral-sh.uv -e`),
+   clone the repo to a folder without a trailing space, and copy the Remote
+   Script into the User Library:
+
+   ```powershell
+   git clone https://github.com/owdez/AbletonConnect.git
+   cd AbletonConnect
+   powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+   ```
+
+   It reads the User Library from `%APPDATA%\Ableton\Live 12.x.x\Preferences\Library.cfg`
+   (default `Documents\Ableton\User Library`) and always copies, because a
+   symlink needs admin rights or Developer Mode. Run it again after every
+   change to `remote_script\`.
+
+2. Restart Live and pick LiveBridge as a Control Surface, as in steps 2 and 3
+   above.
+
+3. Register the MCP server with Claude Code. `install.ps1` prints this command
+   with uv's full path filled in:
+
+   ```powershell
+   claude mcp add --scope user ableton -- "C:\path\to\uv.exe" --directory "C:\path\to\AbletonConnect\server" run abletonconnect-mcp
+   ```
+
+   For the Claude desktop app, quit it (tray icon > Quit), then run
+   `scripts\install.ps1 -Desktop`. It edits `%APPDATA%\Claude\claude_desktop_config.json`,
+   or the Microsoft Store build's copy under `%LOCALAPPDATA%\Packages\Claude_*`.
+
+4. Check it with `powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Check`.
+   Live's log is `%APPDATA%\Ableton\Live 12.x.x\Preferences\Log.txt`.
+
+What's different on Windows:
+
+- The plugin scan (`abletonconnect-scan-plugins`) only runs on macOS, so
+  `list_plugins`, `get_plugin_info` and `load_plugin` have no index. Claude
+  loads plugins through `browse_browser`/`search_browser` and `load_browser_item`
+  instead.
+- The sample index defaults to `%LOCALAPPDATA%\AbletonConnect\samples.db`.
+- Save with Ctrl+S, and undo in Live with Ctrl+Z.
 
 ## Use it
 
@@ -209,8 +260,8 @@ ever appends a dated line; your own text is never rewritten.
 
 Claude works better with your own plugins than with generic stock devices, so
 AbletonConnect keeps an index of them: `~/.config/abletonconnect/plugins.json`,
-which stays on your machine and out of the repo. Build it with Live open on a
-new, empty set:
+which stays on your machine and out of the repo. The scan is macOS-only for
+now. Build it with Live open on a new, empty set:
 
 ```bash
 uv run --project server abletonconnect-scan-plugins
@@ -312,7 +363,8 @@ and the MCP server read it; Live needs a restart to pick up a port change:
   `ABLETONCONNECT_PORT` environment variable.
 - `sample_folders` entries are paths, or objects with a `browser` path for a
   folder that sits inside a folder added to Live's browser.
-- `sample_index` defaults to the path above.
+- `sample_index` defaults to the path above (`%LOCALAPPDATA%\AbletonConnect\samples.db`
+  on Windows).
 - `ABLETONCONNECT_TASTE`, `ABLETONCONNECT_PLUGIN_INDEX`, `ABLETONCONNECT_PLUGIN_ROLES` and
   `ABLETONCONNECT_KITS` (environment variables) point the server at other files, as the tests do.
 - `kits_folder` overrides where Claude Kits live (default: `Claude Kits` in the

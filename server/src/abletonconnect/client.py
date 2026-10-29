@@ -17,12 +17,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from .config import HOST, resolve_port
+from .config import HOST, WINDOWS, install_script, log_hint, resolve_port
 
 PROTOCOL_VERSION = 1
 CLIENT_NAME = "abletonconnect-mcp/0.1.0"
 MAX_LINE_BYTES = 8 * 1024 * 1024
-LOG_HINT = "~/Library/Preferences/Ableton/Live <version>/Log.txt"
 
 log = logging.getLogger(__name__)
 
@@ -53,8 +52,14 @@ class LiveCommandError(LiveError):
 
 
 def is_live_running() -> bool | None:
-    """True/False from pgrep, None if we can't tell."""
+    """True/False from pgrep (macOS) or tasklist (Windows), None if we can't tell."""
     try:
+        if WINDOWS:
+            # The image name carries the edition: "Ableton Live 12 Suite.exe", "Ableton Live 12 Lite.exe".
+            proc = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=5)
+            if proc.returncode != 0:
+                return None
+            return any(line.startswith('"Ableton Live') for line in proc.stdout.splitlines())
         proc = subprocess.run(["pgrep", "-x", "Live"], capture_output=True, timeout=2)
     except (OSError, subprocess.SubprocessError):
         return None
@@ -216,7 +221,7 @@ class LiveClient:
             writer.close()
             raise LiveUnavailable(
                 f"LiveBridge in Live speaks protocol {info.get('protocol')}, this server speaks {PROTOCOL_VERSION}. "
-                "Run scripts/install.sh to update the Remote Script, then restart Live."
+                f"Run {install_script()} to update the Remote Script, then restart Live."
             )
         conn = _Connection(reader, writer, info)
         conn.task = asyncio.create_task(self._read_loop(conn))
@@ -231,8 +236,8 @@ class LiveClient:
         return LiveUnavailable(
             f"{prefix} LiveBridge isn't answering on {self.host}:{self.port} ({exc.__class__.__name__}). "
             "In Live > Settings > Link, Tempo & MIDI, set a Control Surface slot to LiveBridge. "
-            "If it's not in the list, run scripts/install.sh and restart Live; Live only loads Remote "
-            f"Scripts at startup. Errors from the script are in {LOG_HINT}."
+            f"If it's not in the list, run {install_script()} and restart Live; Live only loads Remote "
+            f"Scripts at startup. Errors from the script are in {log_hint()}."
         )
 
     async def _read_loop(self, conn: _Connection) -> None:

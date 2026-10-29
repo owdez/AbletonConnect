@@ -23,10 +23,12 @@ from sampleindex import search as sample_search
 from . import kits as kit_store
 from . import taste
 from .client import LiveClient, LiveError
+from .config import WINDOWS
+from .plugins import SCAN_ON_WINDOWS
 from .plugins import index as plugin_index
 
 INSTRUCTIONS = """\
-Controls the Ableton Live set that's open on this Mac, for a producer with their own sound.
+Controls the Ableton Live set that's open on this computer, for a producer with their own sound.
 Working with them:
 - Before creating anything, read get_taste_profile, list_kits and list_plugins. Their kits and plugins come before
   Live's stock devices and presets; reach for stock only when nothing of theirs fits, and say so.
@@ -50,7 +52,7 @@ Using Live:
 - Transport positions are 1-based bars or beats. To hear or meter one section, start_playback(bar=...) rather than
   playing from bar 1. After firing Session clips, back_to_arrangement hands the tracks back to the timeline.
 - Live's API can't save the set. After you build or change something substantial, remind the user to save in Live
-  (Cmd+S).
+  (Cmd+S, or Ctrl+S on Windows).
 """
 
 TrackType = Literal["track", "return", "master"]
@@ -780,6 +782,8 @@ def _plugin_entries(required: bool = True) -> list[dict[str, Any]]:
         _index_cache.update(stamp=stamp, paths=paths, entries=entries)
     entries = _index_cache["entries"]
     if entries is None and required:
+        if WINDOWS:
+            raise ToolError(SCAN_ON_WINDOWS)
         raise ToolError(
             "There's no plugin index yet. Run `uv run --project server abletonconnect-scan-plugins` "
             "in the AbletonConnect folder with Live open on an empty set."

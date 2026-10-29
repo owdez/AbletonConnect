@@ -97,58 +97,13 @@ desktop() {
     echo "Backed up $DESKTOP_CONFIG"
     echo "       to $backup"
   fi
-  /usr/bin/python3 - "$DESKTOP_CONFIG" "$uv" "$REPO/server" <<'PY'
-import json, os, sys
-
-path, uv, server = sys.argv[1:4]
-data, mode = {}, 0o600
-if os.path.exists(path):
-    mode = os.stat(path).st_mode & 0o777
-    with open(path, encoding="utf-8") as f:
-        text = f.read()
-    if text.strip():
-        data = json.loads(text)  # refuse to touch a file that isn't valid JSON
-servers = data.setdefault("mcpServers", {})
-servers["ableton"] = {"command": uv, "args": ["--directory", server, "run", "abletonconnect-mcp"]}
-tmp = path + ".tmp"
-with open(tmp, "w", encoding="utf-8") as f:
-    json.dump(data, f, indent=2, ensure_ascii=False)
-    f.write("\n")
-os.chmod(tmp, mode)
-os.replace(tmp, path)
-with open(path, encoding="utf-8") as f:
-    json.load(f)
-print("Registered 'ableton' in %s (%d MCP server%s)." % (path, len(servers), "" if len(servers) == 1 else "s"))
-PY
+  /usr/bin/python3 "$REPO/scripts/mcp_config.py" register "$DESKTOP_CONFIG" "$uv" "$REPO/server"
   echo "Open the Claude desktop app to load it."
 }
 
 # Where Claude Code (user scope) and the desktop app run the MCP server from.
 registrations() {
-  /usr/bin/python3 - "$HOME/.claude.json" "$DESKTOP_CONFIG" "$REPO/server" <<'PY' || true
-import json, sys
-
-def where(entry):
-    args = entry.get("args") or []
-    return args[args.index("--directory") + 1] if "--directory" in args[:-1] else " ".join([entry.get("command", "")] + args)
-
-expected = sys.argv[3]
-for n, (label, path) in enumerate((("Claude Code", sys.argv[1]), ("Desktop app", sys.argv[2]))):
-    try:
-        with open(path, encoding="utf-8") as f:
-            entry = (json.load(f).get("mcpServers") or {}).get("ableton")
-    except (OSError, ValueError):
-        entry = None
-    head = ("MCP:      " if n == 0 else " " * 10) + label + ":"
-    if entry is None:
-        hint = "claude mcp add --scope user ableton ... (see README)" if n == 0 else "scripts/install.sh --desktop"
-        print("%s not registered (%s)" % (head, hint))
-        continue
-    directory = where(entry)
-    print("%s %r" % (head, directory))
-    if directory != expected:
-        print("          WARNING: that isn't this repo's server folder (%r). Register it again." % expected)
-PY
+  /usr/bin/python3 "$REPO/scripts/mcp_config.py" show "$HOME/.claude.json" "$DESKTOP_CONFIG" "$REPO/server" || true
 }
 
 check() {

@@ -3,12 +3,40 @@ the Remote Script."""
 
 import json
 import os
+import sys
 from pathlib import Path
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 9878
 CONFIG_DIR = Path("~/.config/abletonconnect").expanduser()
 CONFIG_PATH = CONFIG_DIR / "config.json"
+WINDOWS = sys.platform == "win32"
+
+
+def install_script() -> str:
+    return r"scripts\install.ps1" if WINDOWS else "scripts/install.sh"
+
+
+def live_prefs_dirs() -> list[Path]:
+    """Live's preferences folders (Library.cfg, Log.txt), newest first. macOS:
+    ~/Library/Preferences/Ableton/Live 12.4.7. Windows: %APPDATA%\\Ableton\\Live 12.4.7\\Preferences."""
+    if WINDOWS:
+        root = Path(os.environ.get("APPDATA") or "~/AppData/Roaming").expanduser() / "Ableton"
+        folders = [p / "Preferences" for p in root.glob("Live *")]
+    else:
+        folders = list(Path("~/Library/Preferences/Ableton").expanduser().glob("Live *"))
+    return sorted((p for p in folders if p.is_dir()), key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def default_user_library() -> Path:
+    """Where Live puts the User Library when Library.cfg doesn't say otherwise."""
+    return Path("~/Documents/Ableton/User Library" if WINDOWS else "~/Music/Ableton/User Library").expanduser()
+
+
+def log_hint() -> str:
+    if WINDOWS:
+        return r"%APPDATA%\Ableton\Live <version>\Preferences\Log.txt"
+    return "~/Library/Preferences/Ableton/Live <version>/Log.txt"
 
 
 def resolve_port() -> int:

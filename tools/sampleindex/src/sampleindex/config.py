@@ -16,12 +16,23 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 CONFIG_PATH = Path("~/.config/abletonconnect/config.json").expanduser()
-DEFAULT_INDEX = Path("~/Library/Application Support/AbletonConnect/samples.db").expanduser()
 INDEX_ENV = "ABLETONCONNECT_SAMPLE_INDEX"
+
+
+def default_index(windows: bool) -> Path:
+    """~/Library/Application Support/AbletonConnect/samples.db, or %LOCALAPPDATA%\\AbletonConnect\\samples.db
+    on Windows."""
+    if windows:
+        return Path(os.environ.get("LOCALAPPDATA") or "~/AppData/Local").expanduser() / "AbletonConnect" / "samples.db"
+    return Path("~/Library/Application Support/AbletonConnect/samples.db").expanduser()
+
+
+DEFAULT_INDEX = default_index(sys.platform == "win32")
 
 
 class ConfigError(Exception):
